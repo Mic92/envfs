@@ -1,0 +1,17 @@
+[package]
+name = "envfs"
+version = "0.1.0"
+authors = ["Jörg Thalheim <joerg@thalheim.io>"]
+edition = "2018"
+
+[dependencies]
+log = "0.4.*"
+nix = "0.19.*"
+libc = "0.2.*"
+simple-error = "0.2.*"
+parking_lot = "0.11.*"
+cntr-fuse = { version = "0.4.*", default-features = false }
+
+[dependencies.concurrent-hashmap]
+version = "0.2.*"
+default-features = false
