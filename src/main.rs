@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use log::info;
 use nix::mount;
 use nix::sys::signal;
 use simple_error::bail;
@@ -6,7 +7,6 @@ use simple_error::try_with;
 use std::path::{Path, PathBuf};
 use std::sync::Condvar;
 use std::sync::Mutex;
-use log::info;
 
 use crate::fs::EnvFs;
 use crate::logger::enable_debug_log;
