@@ -7,25 +7,25 @@ use log::debug;
 use nix::errno::Errno;
 use nix::unistd::{self, Pid};
 use simple_error::try_with;
+use std::cmp;
 use std::collections::HashMap;
 use std::env;
-use std::cmp;
 use std::ffi::{OsStr, OsString};
-use std::io;
-use std::thread::{self, JoinHandle};
 use std::fs::File;
+use std::io;
 use std::io::{BufRead, BufReader};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc,RwLock};
+use std::sync::{Arc, RwLock};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::fusefd;
+use crate::num_cpus;
 use crate::result::Result;
 use crate::setrlimit::{setrlimit, Rlimit};
-use crate::num_cpus;
 
 // 1 second
 const TTL: Duration = Duration::from_secs(1);

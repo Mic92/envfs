@@ -1,11 +1,11 @@
-use simple_error::try_with;
-use std::path::{Path, PathBuf};
+use lazy_static::lazy_static;
 use nix::mount;
 use nix::sys::signal;
-use std::sync::Mutex;
-use std::sync::Condvar;
-use lazy_static::lazy_static;
 use simple_error::bail;
+use simple_error::try_with;
+use std::path::{Path, PathBuf};
+use std::sync::Condvar;
+use std::sync::Mutex;
 
 use crate::fs::EnvFs;
 use crate::logger::enable_debug_log;
@@ -14,25 +14,21 @@ use crate::result::Result;
 mod fs;
 mod fusefd;
 mod logger;
+mod num_cpus;
 mod result;
 mod setrlimit;
-mod num_cpus;
-
 
 struct MountGuard<'a> {
     mount_point: &'a Path,
 }
 
 lazy_static! {
-    static ref SIGNAL_RECEIVED : Condvar = {
-        Condvar::new()
-    };
+    static ref SIGNAL_RECEIVED: Condvar = { Condvar::new() };
 }
 
 extern "C" fn handle_sigint(_: i32) {
     SIGNAL_RECEIVED.notify_all();
 }
-
 
 fn serve_fs(mountpoint: &Path) -> Result<()> {
     let fs = try_with!(EnvFs::new(), "cannot create filesystem");
@@ -50,16 +46,22 @@ fn serve_fs(mountpoint: &Path) -> Result<()> {
     );
 
     unsafe {
-        try_with!(signal::sigaction(signal::SIGINT, &sig_action),
-                  "Unable to register SIGINT handler");
-        try_with!(signal::sigaction(signal::SIGTERM, &sig_action),
-                  "Unable to register SIGTERM handler");
+        try_with!(
+            signal::sigaction(signal::SIGINT, &sig_action),
+            "Unable to register SIGINT handler"
+        );
+        try_with!(
+            signal::sigaction(signal::SIGTERM, &sig_action),
+            "Unable to register SIGTERM handler"
+        );
     }
 
     let mutex = Mutex::new(true);
     let lock_result = try_with!(mutex.lock(), "cannot acquire lock");
-    let res = try_with!(SIGNAL_RECEIVED.wait(lock_result),
-              "failed to wait for signal barrier");
+    let res = try_with!(
+        SIGNAL_RECEIVED.wait(lock_result),
+        "failed to wait for signal barrier"
+    );
 
     drop(guard);
     for session in sessions {
@@ -86,7 +88,6 @@ fn show_help(prog_name: &str) {
     eprintln!("USAGE: {} [options] mountpoint", prog_name);
     eprintln!("-h, --help     show help");
     eprintln!("-v, --verbose  verbose logging");
-
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -94,7 +95,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut opts = Options {
         verbose: false,
         show_help: false,
-        args: &[]
+        args: &[],
     };
     loop {
         if i >= args.len() {
@@ -104,7 +105,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
             "-h" | "--help" => {
                 opts.show_help = true;
                 return Ok(opts);
-            },
+            }
             "-v" | "--verbose" => {
                 opts.verbose = true;
             }
@@ -113,7 +114,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     bail!("unrecognized argument '{}'", args[i]);
                 }
                 if args[i] == "--" {
-                    opts.args = &args[i+1..];
+                    opts.args = &args[i + 1..];
                 } else {
                     opts.args = &args[i..];
                 }
