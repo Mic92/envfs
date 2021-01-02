@@ -143,7 +143,7 @@ impl EnvFs {
             let cntrfs = EnvFs {
                 inodes: Arc::clone(&self.inodes),
                 inode_counter: Arc::clone(&self.inode_counter),
-                fuse_fd: self.fuse_fd.into_raw_fd(),
+                fuse_fd: self.fuse_fd,
             };
 
             let max_background = num_sessions as u16;
