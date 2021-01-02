@@ -9,7 +9,6 @@ log = "0.4.*"
 nix = "0.19.*"
 libc = "0.2.*"
 simple-error = "0.2.*"
-parking_lot = "0.11.*"
 lazy_static = "1.4.*"
 cntr-fuse = { version = "0.4.*", default-features = false }
 

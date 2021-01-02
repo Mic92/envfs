@@ -6,7 +6,6 @@ use libc::ENOENT;
 use log::debug;
 use nix::errno::Errno;
 use nix::unistd::{self, Pid};
-use parking_lot::RwLock;
 use simple_error::try_with;
 use std::collections::HashMap;
 use std::env;
@@ -20,7 +19,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc,RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::fusefd;
@@ -59,7 +58,6 @@ pub struct Inode {
     pub kind: FileType,
     pub ino: u64,
     pub nlookup: RwLock<u64>,
-    pub has_default_acl: RwLock<Option<bool>>,
 }
 
 pub struct EnvFs {
@@ -112,7 +110,7 @@ impl EnvFs {
     }
 
     fn next_inode_number(&self) -> (u64, u64) {
-        let mut counter = self.inode_counter.write();
+        let mut counter = self.inode_counter.write().unwrap();
         let next_number = counter.next_number;
         counter.next_number += 1;
 
@@ -266,7 +264,6 @@ impl Filesystem for EnvFs {
             kind: attr.kind,
             ino: attr.ino,
             nlookup: RwLock::new(1),
-            has_default_acl: RwLock::new(None),
         });
         assert!(self.inodes.insert(next_number, inode).is_none());
 
