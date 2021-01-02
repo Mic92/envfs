@@ -14,3 +14,4 @@ $ mount --bind /usr/bin /bin
 * Provide fallback PATH for /bin/sh and /usr/bin/env if the process is a setuid
 binary or has no PATH set.
 * Disable symlink caching in cntr-fuse
+* NixOS module
