@@ -304,6 +304,29 @@ impl Filesystem for EnvFs {
         reply.ok();
     }
 
+    fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
+        match self.inodes.find_mut(&ino) {
+            Some(ref mut inode_lock) => {
+                let inode = inode_lock.get();
+                let mut old_nlookup = inode.nlookup.write().unwrap();
+                assert!(*old_nlookup >= nlookup);
+
+                *old_nlookup -= nlookup;
+
+                if *old_nlookup != 0 {
+                    return;
+                };
+            }
+            None => return,
+        };
+
+        self.inodes.remove(&ino);
+    }
+
+    fn destroy(&mut self, _req: &Request) {
+        self.inodes.clear();
+    }
+
     fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
         let inode = tryfuse!(self.inode(ino), reply);
         let env = match read_environment(Pid::from_raw(req.pid() as i32)) {
