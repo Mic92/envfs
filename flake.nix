@@ -1,9 +1,24 @@
 {
-  description = "A very basic flake";
+  description = "Fuse filesystem that returns symlinks to executables based on the PATH of the requesting process.";
 
-  outputs = { self, nixpkgs }: {
-    packages.x86_64-linux.hello = nixpkgs.legacyPackages.x86_64-linux.hello;
+  inputs.utils.url = "github:numtide/flake-utils";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs";
 
-    defaultPackage.x86_64-linux = self.packages.x86_64-linux.hello;
+  outputs = { self, nixpkgs, utils }: {
+    nixosModules.envfs = import ./modules/envfs.nix;
+  } // utils.lib.eachSystem ["x86_64-linux" "aarch64-linux"] (system: let
+    pkgs = nixpkgs.legacyPackages.${system};
+  in {
+    packages.envfs = pkgs.callPackage ./default.nix {};
+    defaultPackage = self.packages.${system}.envfs;
+  }) // {
+    checks.x86_64-linux.integration-tests = let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+    in import ./nixos-test.nix {
+        makeTest = import (nixpkgs + "/nixos/tests/make-test-python.nix");
+        inherit pkgs;
+        inherit (self.packages.${system}) cntr;
+    };
   };
 }

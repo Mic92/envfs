@@ -64,10 +64,11 @@ pub struct EnvFs {
     inodes: Arc<ConcHashMap<u64, Arc<Inode>>>,
     inode_counter: Arc<RwLock<InodeCounter>>,
     fuse_fd: RawFd,
+    fallback_paths: Arc<Vec<PathBuf>>,
 }
 
 impl EnvFs {
-    pub fn new() -> Result<EnvFs> {
+    pub fn new(fallback_paths: &[PathBuf]) -> Result<EnvFs> {
         let fuse_fd = try_with!(fusefd::open(), "failed to initialize fuse");
 
         let limit = Rlimit {
@@ -86,6 +87,7 @@ impl EnvFs {
                 generation: 0,
             })),
             fuse_fd: fuse_fd.into_raw_fd(),
+            fallback_paths: Arc::new(fallback_paths.to_vec()),
         })
     }
 
@@ -144,6 +146,7 @@ impl EnvFs {
                 inodes: Arc::clone(&self.inodes),
                 inode_counter: Arc::clone(&self.inode_counter),
                 fuse_fd: self.fuse_fd.into_raw_fd(),
+                fallback_paths: Arc::clone(&self.fallback_paths),
             };
 
             let max_background = num_sessions as u16;
@@ -205,21 +208,32 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
-pub fn which<P>(path_env: &OsStr, exe_name: P) -> Option<PathBuf>
+pub fn _which<P>(path: &PathBuf, exe_name: P) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
-    env::split_paths(&path_env)
-        .filter_map(|dir| {
-            let full_path = dir.join(&exe_name);
-            let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
-            if res.is_ok() {
-                Some(full_path)
-            } else {
-                None
-            }
-        })
-        .next()
+    let full_path = path.join(&exe_name);
+    let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
+    if res.is_ok() {
+        Some(full_path)
+    } else {
+        None
+    }
+}
+
+pub fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
+where
+    P: AsRef<Path>,
+{
+    let path = env::split_paths(&path_env)
+        .filter_map(|dir| _which(&dir, &exe_name))
+        .next();
+    path.or_else(|| {
+        fallback_paths
+            .iter()
+            .filter_map(|dir| _which(&dir, &exe_name))
+            .next()
+    })
 }
 
 fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
@@ -343,7 +357,7 @@ impl Filesystem for EnvFs {
                 return;
             }
         };
-        match which(path, &inode.name) {
+        match which(path, &inode.name, self.fallback_paths.as_slice()) {
             Some(target) => {
                 let data = target.as_os_str().as_bytes();
                 reply.data(data);
