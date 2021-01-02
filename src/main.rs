@@ -1,12 +1,11 @@
 use simple_error::try_with;
-use std::env;
 use std::path::{Path, PathBuf};
-use std::process::exit;
 use nix::mount;
 use nix::sys::signal;
-use std::sync::{Mutex};
+use std::sync::Mutex;
 use std::sync::Condvar;
 use lazy_static::lazy_static;
+use simple_error::bail;
 
 use crate::fs::EnvFs;
 use crate::logger::enable_debug_log;
@@ -25,24 +24,24 @@ struct MountGuard<'a> {
 }
 
 lazy_static! {
-    static ref SIGNAL_HAPPEN : Condvar = {
+    static ref SIGNAL_RECEIVED : Condvar = {
         Condvar::new()
     };
 }
 
 extern "C" fn handle_sigint(_: i32) {
-    SIGNAL_HAPPEN.notify_all();
+    SIGNAL_RECEIVED.notify_all();
 }
 
 
-fn mount_fs(mountpoint: &Path) -> Result<()> {
+fn serve_fs(mountpoint: &Path) -> Result<()> {
     let fs = try_with!(EnvFs::new(), "cannot create filesystem");
     try_with!(fs.mount(mountpoint), "cannot mount filesystem");
 
     let guard = MountGuard {
         mount_point: mountpoint,
     };
-    let sessions = fs.spawn_sessions().unwrap();
+    let sessions = try_with!(fs.spawn_sessions(), "cannot start fuse sessions");
 
     let sig_action = signal::SigAction::new(
         signal::SigHandler::Handler(handle_sigint),
@@ -59,13 +58,14 @@ fn mount_fs(mountpoint: &Path) -> Result<()> {
 
     let mutex = Mutex::new(true);
     let lock_result = try_with!(mutex.lock(), "cannot acquire lock");
-    let _ = try_with!(SIGNAL_HAPPEN.wait(lock_result),
+    let res = try_with!(SIGNAL_RECEIVED.wait(lock_result),
               "failed to wait for signal barrier");
 
     drop(guard);
     for session in sessions {
         let _ = session.join();
     }
+    drop(res);
 
     Ok(())
 }
@@ -76,14 +76,92 @@ impl<'a> Drop for MountGuard<'a> {
     }
 }
 
-fn main() {
-    //enable_debug_log().unwrap();
-    let mountpoint = env::args_os().nth(1).unwrap();
-    match mount_fs(&PathBuf::from(mountpoint)) {
+struct Options<'a> {
+    verbose: bool,
+    show_help: bool,
+    args: &'a [String],
+}
+
+fn show_help(prog_name: &str) {
+    eprintln!("USAGE: {} [options] mountpoint", prog_name);
+    eprintln!("-h, --help     show help");
+    eprintln!("-v, --verbose  verbose logging");
+
+}
+
+fn parse_options(args: &[String]) -> Result<Options> {
+    let mut i: usize = 0;
+    let mut opts = Options {
+        verbose: false,
+        show_help: false,
+        args: &[]
+    };
+    loop {
+        if i >= args.len() {
+            return Ok(opts);
+        }
+        match args[i].as_ref() {
+            "-h" | "--help" => {
+                opts.show_help = true;
+                return Ok(opts);
+            },
+            "-v" | "--verbose" => {
+                opts.verbose = true;
+            }
+            _ => {
+                if args[i].starts_with("-") && args[i] != "--" {
+                    bail!("unrecognized argument '{}'", args[i]);
+                }
+                if args[i] == "--" {
+                    opts.args = &args[i+1..];
+                } else {
+                    opts.args = &args[i..];
+                }
+                return Ok(opts);
+            }
+        }
+        i += 1;
+    }
+}
+
+fn run_app(args: &[String]) -> i32 {
+    let default_name = String::from("envfs");
+    let app_name = args.get(0).unwrap_or(&default_name);
+    let opts = match parse_options(&args[1..]) {
+        Ok(opts) => opts,
+        Err(err) => {
+            eprintln!("{}: {}", app_name, err);
+            return 1;
+        }
+    };
+    if opts.args.len() == 0 {
+        eprintln!("Not enough arguments.");
+        show_help(app_name);
+        return 1;
+    }
+    if opts.show_help {
+        show_help(app_name);
+        return 0;
+    }
+    if opts.verbose {
+        if let Err(err) = enable_debug_log() {
+            eprintln!("{}: cannot set up logging: {}", app_name, err);
+        }
+    }
+
+    let mountpoint = &opts.args[0];
+
+    match serve_fs(&PathBuf::from(mountpoint)) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("{}", e);
-            exit(1);
+            return 1;
         }
     };
+    return 0;
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    std::process::exit(run_app(&args))
 }
