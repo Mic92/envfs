@@ -6,6 +6,7 @@ use simple_error::try_with;
 use std::path::{Path, PathBuf};
 use std::sync::Condvar;
 use std::sync::Mutex;
+use log::info;
 
 use crate::fs::EnvFs;
 use crate::logger::enable_debug_log;
@@ -23,7 +24,7 @@ struct MountGuard<'a> {
 }
 
 lazy_static! {
-    static ref SIGNAL_RECEIVED: Condvar = { Condvar::new() };
+    static ref SIGNAL_RECEIVED: Condvar = Condvar::new();
 }
 
 extern "C" fn handle_sigint(_: i32) {
@@ -62,6 +63,7 @@ fn serve_fs(mountpoint: &Path) -> Result<()> {
         SIGNAL_RECEIVED.wait(lock_result),
         "failed to wait for signal barrier"
     );
+    info!("Stop fuse");
 
     drop(guard);
     for session in sessions {
