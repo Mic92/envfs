@@ -31,8 +31,8 @@ extern "C" fn handle_sigint(_: i32) {
     SIGNAL_RECEIVED.notify_all();
 }
 
-fn serve_fs(mountpoint: &Path) -> Result<()> {
-    let fs = try_with!(EnvFs::new(), "cannot create filesystem");
+fn serve_fs(mountpoint: &Path, fallback_paths: &[&str]) -> Result<()> {
+    let fs = try_with!(EnvFs::new(fallback_paths), "cannot create filesystem");
     try_with!(fs.mount(mountpoint), "cannot mount filesystem");
 
     let guard = MountGuard {
@@ -83,13 +83,16 @@ impl<'a> Drop for MountGuard<'a> {
 struct Options<'a> {
     verbose: bool,
     show_help: bool,
+    fallback_paths: Vec<&'a str>,
     args: &'a [String],
 }
 
 fn show_help(prog_name: &str) {
     eprintln!("USAGE: {} [options] mountpoint", prog_name);
-    eprintln!("-h, --help     show help");
-    eprintln!("-v, --verbose  verbose logging");
+    eprintln!("-h, --help             show help");
+    eprintln!("-v, --verbose          verbose logging");
+    eprintln!("-o fallback-path=PATH  Fallback path if PATH is not set");
+    eprintln!("                       (can be passed multiple times)");
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -97,6 +100,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut opts = Options {
         verbose: false,
         show_help: false,
+        fallback_paths: vec![],
         args: &[],
     };
     loop {
@@ -107,6 +111,24 @@ fn parse_options(args: &[String]) -> Result<Options> {
             "-h" | "--help" => {
                 opts.show_help = true;
                 return Ok(opts);
+            }
+            "-o" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("'-o' requires an argument");
+                }
+                let mount_opt: Vec<&str> = args[i].splitn(2, '=').collect();
+                match mount_opt[0] {
+                    "fallback-path" => {
+                        if mount_opt.len() != 2 {
+                            bail!("fallback-path needs an argument");
+                        }
+                        opts.fallback_paths.push(mount_opt[1]);
+                    }
+                    _ => {
+                        bail!("invalid mount option: {}", mount_opt[0]);
+                    }
+                }
             }
             "-v" | "--verbose" => {
                 opts.verbose = true;
@@ -154,7 +176,7 @@ fn run_app(args: &[String]) -> i32 {
 
     let mountpoint = &opts.args[0];
 
-    match serve_fs(&PathBuf::from(mountpoint)) {
+    match serve_fs(&PathBuf::from(mountpoint), &opts.fallback_paths) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("{}", e);

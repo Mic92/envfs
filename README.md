@@ -14,7 +14,5 @@ lr----x--t 0 root  1 Jan  1970  /usr/bin/python -> /home/joerg/.nix-profile/b
 
 ## TODO
 
-* Provide fallback PATH for /bin/sh and /usr/bin/env if the process is a setuid
-binary or has no PATH set.
 * Disable symlink caching in cntr-fuse
 * NixOS module

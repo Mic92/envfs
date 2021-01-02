@@ -64,10 +64,11 @@ pub struct EnvFs {
     inodes: Arc<ConcHashMap<u64, Arc<Inode>>>,
     inode_counter: Arc<RwLock<InodeCounter>>,
     fuse_fd: RawFd,
+    fallback_paths: Arc<Vec<PathBuf>>,
 }
 
 impl EnvFs {
-    pub fn new() -> Result<EnvFs> {
+    pub fn new(fallback_paths: &[&str]) -> Result<EnvFs> {
         let fuse_fd = try_with!(fusefd::open(), "failed to initialize fuse");
 
         let limit = Rlimit {
@@ -79,6 +80,8 @@ impl EnvFs {
             "Cannot raise file descriptor limit"
         );
 
+        let copy = fallback_paths.iter().map(|&s| PathBuf::from(s)).collect();
+
         Ok(EnvFs {
             inodes: Arc::new(ConcHashMap::<u64, Arc<Inode>>::new()),
             inode_counter: Arc::new(RwLock::new(InodeCounter {
@@ -86,6 +89,7 @@ impl EnvFs {
                 generation: 0,
             })),
             fuse_fd: fuse_fd.into_raw_fd(),
+            fallback_paths: Arc::new(copy),
         })
     }
 
@@ -144,6 +148,7 @@ impl EnvFs {
                 inodes: Arc::clone(&self.inodes),
                 inode_counter: Arc::clone(&self.inode_counter),
                 fuse_fd: self.fuse_fd.into_raw_fd(),
+                fallback_paths: Arc::clone(&self.fallback_paths),
             };
 
             let max_background = num_sessions as u16;
@@ -205,11 +210,12 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
-pub fn which<P>(path_env: &OsStr, exe_name: P) -> Option<PathBuf>
+pub fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
     env::split_paths(&path_env)
+        .chain(fallback_paths.iter().map(|p| p.clone()))
         .filter_map(|dir| {
             let full_path = dir.join(&exe_name);
             let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
@@ -343,7 +349,7 @@ impl Filesystem for EnvFs {
                 return;
             }
         };
-        match which(path, &inode.name) {
+        match which(path, &inode.name, self.fallback_paths.as_slice()) {
             Some(target) => {
                 let data = target.as_os_str().as_bytes();
                 reply.data(data);
