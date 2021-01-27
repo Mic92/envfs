@@ -1,7 +1,7 @@
 { pkgs, config, lib, ... }:
-{
-  environment.systemPackages = [ (pkgs.callPackage ../. {}) ];
-  fileSystems = lib.mkVMOverride {
+
+let
+  mounts = {
     "/usr/bin" = {
       device = "envfs";
       fsType = "envfs";
@@ -19,4 +19,7 @@
       options = [ "bind" ];
     };
   };
+in {
+  environment.systemPackages = [ (pkgs.callPackage ../. {}) ];
+  fileSystems = if config.virtualisation ? qemu then lib.mkVMOverride mounts else mounts;
 }
