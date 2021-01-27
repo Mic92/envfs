@@ -61,7 +61,7 @@ fn wait_signal(mountpoint: &Path) -> Result<()> {
         );
     }
 
-    let mutex = Mutex::new(true);
+    let mutex = Mutex::new(());
     let lock_result = try_with!(mutex.lock(), "cannot acquire lock");
     let res = try_with!(
         SIGNAL_RECEIVED.wait(lock_result),
@@ -170,7 +170,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
                 opts.verbose = true;
             }
             _ => {
-                if args[i].starts_with("-") && args[i] != "--" {
+                if args[i].starts_with('-') && args[i] != "--" {
                     bail!("unrecognized argument '{}'", args[i]);
                 }
                 if args[i] == "--" {
@@ -194,7 +194,7 @@ fn run_app(args: &[String]) -> i32 {
             return 1;
         }
     };
-    if opts.args.len() == 0 {
+    if opts.args.is_empty() {
         eprintln!("Not enough arguments.");
         show_help(app_name);
         return 1;
@@ -219,7 +219,8 @@ fn run_app(args: &[String]) -> i32 {
             return 1;
         }
     };
-    return 0;
+
+    0
 }
 
 fn main() {
