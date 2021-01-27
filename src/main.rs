@@ -1,12 +1,11 @@
 use lazy_static::lazy_static;
 use log::info;
-use nix::mount;
 use nix::sys::signal;
+use nix::{mount, unistd};
 use simple_error::bail;
 use simple_error::try_with;
 use std::path::{Path, PathBuf};
-use std::sync::Condvar;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 use crate::fs::EnvFs;
 use crate::logger::enable_debug_log;
@@ -31,14 +30,19 @@ extern "C" fn handle_sigint(_: i32) {
     SIGNAL_RECEIVED.notify_all();
 }
 
-fn serve_fs(mountpoint: &Path) -> Result<()> {
-    let fs = try_with!(EnvFs::new(), "cannot create filesystem");
-    try_with!(fs.mount(mountpoint), "cannot mount filesystem");
+struct Options {
+    mountpoint: PathBuf,
+    verbose: bool,
+    show_help: bool,
+    foreground: bool,
+    fallback_paths: Vec<PathBuf>,
+    args: Vec<String>,
+}
 
+fn wait_signal(mountpoint: &Path) -> Result<()> {
     let guard = MountGuard {
         mount_point: mountpoint,
     };
-    let sessions = try_with!(fs.spawn_sessions(), "cannot start fuse sessions");
 
     let sig_action = signal::SigAction::new(
         signal::SigHandler::Handler(handle_sigint),
@@ -66,10 +70,35 @@ fn serve_fs(mountpoint: &Path) -> Result<()> {
     info!("Stop fuse");
 
     drop(guard);
+    drop(res);
+
+    Ok(())
+}
+
+fn serve_fs(opts: &Options) -> Result<()> {
+    let fs = try_with!(
+        EnvFs::new(opts.fallback_paths.as_slice()),
+        "cannot create filesystem"
+    );
+    try_with!(fs.mount(&opts.mountpoint), "cannot mount filesystem");
+
+    if !opts.foreground {
+        let res = unsafe { unistd::fork().unwrap() };
+
+        if let unistd::ForkResult::Parent { .. } = res {
+            return Ok(());
+        }
+    }
+
+    let sessions = try_with!(fs.spawn_sessions(), "cannot start fuse sessions");
+
+    if opts.foreground {
+        wait_signal(&opts.mountpoint)?;
+    }
+
     for session in sessions {
         let _ = session.join();
     }
-    drop(res);
 
     Ok(())
 }
@@ -80,24 +109,43 @@ impl<'a> Drop for MountGuard<'a> {
     }
 }
 
-struct Options<'a> {
-    verbose: bool,
-    show_help: bool,
-    args: &'a [String],
-}
-
 fn show_help(prog_name: &str) {
     eprintln!("USAGE: {} [options] mountpoint", prog_name);
-    eprintln!("-h, --help     show help");
-    eprintln!("-v, --verbose  verbose logging");
+    eprintln!("-h, --help             show help");
+    eprintln!("-v, --verbose          verbose logging");
+    eprintln!("-o fallback-path=PATH  Fallback path if PATH is not set");
+    eprintln!("                       (can be passed multiple times)");
+}
+
+fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
+    for option in mount_options.split(',') {
+        let mount_opt: Vec<&str> = option.splitn(2, '=').collect();
+        match mount_opt[0] {
+            // ignore
+            "ro" | "rw" => {}
+            "fallback-path" => {
+                if mount_opt.len() != 2 {
+                    bail!("fallback-path needs an argument");
+                }
+                opts.fallback_paths.push(PathBuf::from(mount_opt[1]));
+            }
+            _ => {
+                bail!("invalid mount option: {}", mount_opt[0]);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
     let mut i: usize = 0;
     let mut opts = Options {
+        mountpoint: PathBuf::from(""),
         verbose: false,
         show_help: false,
-        args: &[],
+        foreground: false,
+        fallback_paths: vec![],
+        args: vec![],
     };
     loop {
         if i >= args.len() {
@@ -108,6 +156,16 @@ fn parse_options(args: &[String]) -> Result<Options> {
                 opts.show_help = true;
                 return Ok(opts);
             }
+            "-f" | "--foreground" => {
+                opts.foreground = true;
+            }
+            "-o" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("'-o' requires an argument");
+                }
+                parse_mount_options(&args[i], &mut opts)?;
+            }
             "-v" | "--verbose" => {
                 opts.verbose = true;
             }
@@ -116,11 +174,10 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     bail!("unrecognized argument '{}'", args[i]);
                 }
                 if args[i] == "--" {
-                    opts.args = &args[i + 1..];
-                } else {
-                    opts.args = &args[i..];
+                    opts.args.extend_from_slice(&args[i + 1..]);
+                    return Ok(opts);
                 }
-                return Ok(opts);
+                opts.args.push(String::from(args[i].as_str()));
             }
         }
         i += 1;
@@ -130,7 +187,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
 fn run_app(args: &[String]) -> i32 {
     let default_name = String::from("envfs");
     let app_name = args.get(0).unwrap_or(&default_name);
-    let opts = match parse_options(&args[1..]) {
+    let mut opts = match parse_options(&args[1..]) {
         Ok(opts) => opts,
         Err(err) => {
             eprintln!("{}: {}", app_name, err);
@@ -142,6 +199,9 @@ fn run_app(args: &[String]) -> i32 {
         show_help(app_name);
         return 1;
     }
+
+    opts.mountpoint = PathBuf::from(&opts.args[if opts.args.len() == 1 { 0 } else { 1 }]);
+
     if opts.show_help {
         show_help(app_name);
         return 0;
@@ -152,9 +212,7 @@ fn run_app(args: &[String]) -> i32 {
         }
     }
 
-    let mountpoint = &opts.args[0];
-
-    match serve_fs(&PathBuf::from(mountpoint)) {
+    match serve_fs(&opts) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("{}", e);
