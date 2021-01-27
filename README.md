@@ -13,7 +13,9 @@ $ cat > foo.py <<EOF
 #!/usr/bin/python
 print("hello world")
 EOF
-$ chmod +x ./foo.py && ./foo.py
+$ chmod +x ./foo.py
+$ ./foo.py
+hello world
 ```
 
 ## Installation in NixOS
