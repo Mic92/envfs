@@ -1,0 +1,27 @@
+name: "Test"
+on:
+  pull_request:
+  schedule:
+    - cron:  '51 2 * * *'
+jobs:
+  tests:
+    strategy:
+      matrix:
+        nixPath:
+          - nixpkgs=https://github.com/NixOS/nixpkgs/archive/nixos-20.09.tar.gz
+          - nixpkgs=https://github.com/NixOS/nixpkgs/archive/nixpkgs-unstable.tar.gz
+        os: [ ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v2
+    - uses: cachix/install-nix-action@v12
+      with:
+        nix_path: "${{ matrix.nixPath }}"
+        extra_nix_config: "system-features = nixos-test benchmark big-parallel kvm"
+    - name: Setup cachix
+      uses: cachix/cachix-action@v8
+      with:
+        name: mic92
+        signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+    - name: Build NixOS test
+      run: nix-build ./nixos-test.nix
