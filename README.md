@@ -86,7 +86,6 @@ If you use experimental nix flakes support:
 ``` nix
 {
   inputs.envfs.url = "github:Mic92/envfs";
-  # optional, not necessary for the module
   inputs.envfs.inputs.nixpkgs.follows = "nixpkgs";
   
   outputs = { self, nixpkgs, envfs }: {
