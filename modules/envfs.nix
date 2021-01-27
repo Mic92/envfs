@@ -22,4 +22,7 @@ let
 in {
   environment.systemPackages = [ (pkgs.callPackage ../. {}) ];
   fileSystems = if config.virtualisation ? qemu then lib.mkVMOverride mounts else mounts;
+
+  system.activationScripts.usrbinenv = lib.mkForce "";
+  system.activationScripts.binsh = lib.mkForce "";
 }
