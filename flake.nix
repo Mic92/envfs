@@ -10,7 +10,7 @@
     pkgs = nixpkgs.legacyPackages.${system};
   in {
     packages.envfs = pkgs.callPackage ./default.nix {
-      src = self;
+      packageSrc = self;
     };
     defaultPackage = self.packages.${system}.envfs;
   }) // {
