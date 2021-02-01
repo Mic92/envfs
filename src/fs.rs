@@ -145,7 +145,7 @@ impl EnvFs {
             let cntrfs = EnvFs {
                 inodes: Arc::clone(&self.inodes),
                 inode_counter: Arc::clone(&self.inode_counter),
-                fuse_fd: self.fuse_fd.into_raw_fd(),
+                fuse_fd: self.fuse_fd,
                 fallback_paths: Arc::clone(&self.fallback_paths),
             };
 
