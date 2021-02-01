@@ -9,7 +9,9 @@
   } // utils.lib.eachSystem ["x86_64-linux" "aarch64-linux"] (system: let
     pkgs = nixpkgs.legacyPackages.${system};
   in {
-    packages.envfs = pkgs.callPackage ./default.nix {};
+    packages.envfs = pkgs.callPackage ./default.nix {
+      src = self;
+    };
     defaultPackage = self.packages.${system}.envfs;
   }) // {
     checks.x86_64-linux.integration-tests = let
