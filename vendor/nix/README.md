@@ -1,6 +1,6 @@
 # Rust bindings to *nix APIs
 
-[![Build Status](https://travis-ci.org/nix-rust/nix.svg?branch=master)](https://travis-ci.org/nix-rust/nix)
+[![Cirrus Build Status](https://api.cirrus-ci.com/github/nix-rust/nix.svg)](https://cirrus-ci.com/github/nix-rust/nix)
 [![crates.io](http://meritbadge.herokuapp.com/nix)](https://crates.io/crates/nix)
 
 [Documentation (Releases)](https://docs.rs/nix/)
@@ -50,7 +50,6 @@ Tier 1:
   * aarch64-unknown-linux-gnu
   * arm-unknown-linux-gnueabi
   * armv7-unknown-linux-gnueabihf
-  * i686-apple-darwin
   * i686-unknown-freebsd
   * i686-unknown-linux-gnu
   * i686-unknown-linux-musl
@@ -73,6 +72,7 @@ Tier 2:
   * armv7-linux-androideabi
   * armv7s-apple-ios
   * i386-apple-ios
+  * i686-apple-darwin
   * i686-linux-android
   * powerpc-unknown-linux-gnu
   * s390x-unknown-linux-gnu
@@ -81,17 +81,19 @@ Tier 2:
   * x86_64-unknown-netbsd
 
 Tier 3:
+  * x86_64-fuchsia
   * x86_64-unknown-redox
+  * x86_64-unknown-linux-gnux32
 
 ## Usage
 
-`nix` requires Rust 1.36.0 or newer.
+`nix` requires Rust 1.40.0 or newer.
 
 To use `nix`, add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nix = "0.19.1"
+nix = "0.20.0"
 ```
 
 ## Contributing

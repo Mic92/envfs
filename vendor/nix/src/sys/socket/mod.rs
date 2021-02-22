@@ -1576,24 +1576,6 @@ pub fn send(fd: RawFd, buf: &[u8], flags: MsgFlags) -> Result<usize> {
  *
  */
 
-/// The protocol level at which to get / set socket options. Used as an
-/// argument to `getsockopt` and `setsockopt`.
-///
-/// [Further reading](http://pubs.opengroup.org/onlinepubs/9699919799/functions/setsockopt.html)
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SockLevel {
-    Socket = libc::SOL_SOCKET,
-    Tcp = libc::IPPROTO_TCP,
-    Ip = libc::IPPROTO_IP,
-    Ipv6 = libc::IPPROTO_IPV6,
-    Udp = libc::IPPROTO_UDP,
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    Netlink = libc::SOL_NETLINK,
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    Alg = libc::SOL_ALG,
-}
-
 /// Represents a socket option that can be accessed or set. Used as an argument
 /// to `getsockopt`
 pub trait GetSockOpt : Copy {
@@ -1718,6 +1700,15 @@ pub fn sockaddr_storage_to_addr(
                 *(addr as *const _ as *const sockaddr_un)
             };
             Ok(SockAddr::Unix(UnixAddr(sun, pathlen)))
+        }
+        #[cfg(any(target_os = "android", target_os = "linux"))]
+        libc::AF_PACKET => {
+            use libc::sockaddr_ll;
+            assert_eq!(len as usize, mem::size_of::<sockaddr_ll>());
+            let sll = unsafe {
+                *(addr as *const _ as *const sockaddr_ll)
+            };
+            Ok(SockAddr::Link(LinkAddr(sll)))
         }
         #[cfg(any(target_os = "android", target_os = "linux"))]
         libc::AF_NETLINK => {

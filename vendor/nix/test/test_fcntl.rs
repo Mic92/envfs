@@ -19,6 +19,8 @@ use std::io::prelude::*;
 #[cfg(not(target_os = "redox"))]
 use std::os::unix::fs;
 
+use crate::*;
+
 #[test]
 #[cfg(not(target_os = "redox"))]
 fn test_openat() {
@@ -92,6 +94,8 @@ mod linux_android {
     use nix::unistd::{close, pipe, read, write};
 
     use tempfile::{tempfile, NamedTempFile};
+
+    use crate::*;
 
     /// This test creates a temporary file containing the contents
     /// 'foobarbaz' and uses the `copy_file_range` call to transfer
@@ -328,7 +332,7 @@ mod linux_android {
           target_os = "fuchsia",
           any(target_os = "wasi", target_env = "wasi"),
           target_env = "uclibc",
-          target_env = "freebsd"))]
+          target_os = "freebsd"))]
 mod test_posix_fadvise {
 
     use tempfile::NamedTempFile;
