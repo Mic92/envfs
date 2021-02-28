@@ -27,7 +27,6 @@ use crate::num_cpus;
 use crate::result::Result;
 use crate::setrlimit::{setrlimit, Rlimit};
 
-// 1 second
 const TTL: Duration = Duration::from_secs(1);
 
 const ROOT_DIR_ATTR: FileAttr = FileAttr {
@@ -54,7 +53,7 @@ struct InodeCounter {
 }
 
 pub struct Inode {
-    pub name: std::ffi::OsString,
+    pub path: PathBuf,
     pub kind: FileType,
     pub ino: u64,
     pub nlookup: RwLock<u64>,
@@ -262,26 +261,47 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
 }
 
 impl Filesystem for EnvFs {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         // no subdirectories
         if parent != cntr_fuse::FUSE_ROOT_ID {
             reply.error(ENOENT);
             return;
         }
 
-        let (next_number, generation) = self.next_inode_number();
+        let env = match read_environment(Pid::from_raw(req.pid() as i32)) {
+            Ok(env) => env,
+            Err(_) => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        let path = match env.get(OsStr::new("PATH")) {
+            Some(v) => v,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        match which(path, &name, self.fallback_paths.as_slice()) {
+            Some(target) => {
+                let (next_number, generation) = self.next_inode_number();
 
-        let attr = symlink_attr(next_number);
+                let attr = symlink_attr(next_number);
 
-        let inode = Arc::new(Inode {
-            name: OsString::from(name),
-            kind: attr.kind,
-            ino: attr.ino,
-            nlookup: RwLock::new(1),
-        });
-        assert!(self.inodes.insert(next_number, inode).is_none());
+                let inode = Arc::new(Inode {
+                    path: target,
+                    kind: attr.kind,
+                    ino: attr.ino,
+                    nlookup: RwLock::new(1),
+                });
+                assert!(self.inodes.insert(next_number, inode).is_none());
 
-        reply.entry(&TTL, &attr, generation);
+                reply.entry(&Duration::from_secs(0), &attr, generation);
+            }
+            None => {
+                reply.error(ENOENT);
+            }
+        }
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
@@ -341,30 +361,9 @@ impl Filesystem for EnvFs {
         self.inodes.clear();
     }
 
-    fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
+    fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
         let inode = tryfuse!(self.inode(ino), reply);
-        let env = match read_environment(Pid::from_raw(req.pid() as i32)) {
-            Ok(env) => env,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        let path = match env.get(OsStr::new("PATH")) {
-            Some(v) => v,
-            None => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        match which(path, &inode.name, self.fallback_paths.as_slice()) {
-            Some(target) => {
-                let data = target.as_os_str().as_bytes();
-                reply.data(data);
-            }
-            None => {
-                reply.error(ENOENT);
-            }
-        }
+        let data = inode.path.as_os_str().as_bytes();
+        reply.data(data);
     }
 }
