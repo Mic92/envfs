@@ -1,0 +1,128 @@
+: 1613471964:0;vim
+: 1613471968:0;vim Cargo.toml
+: 1613471977:0;rg static
+: 1613471987:0;vim src/main.rs
+: 1613472083:0;ls -la vendor
+: 1613472085:0;ls -la vendor/l
+: 1613472087:0;ls -la vendor/lazy_static
+: 1613472090:0;find vendor/lazy_static
+: 1613472093:0;wc -c vendor/lazy_static
+: 1613472096:0;cloc vendor/lazy_static
+: 1613472111:0;cat vendor/lazy_static/src/lib.rs
+: 1613472130:0;tig
+: 1613472145:0;cat .envrc
+: 1613481986:0;vim Cargo.toml
+: 1613482709:0;rg simple
+: 1613482712:0;cd src
+: 1613482713:0;rg simple
+: 1613482718:0;vim result.rs
+: 1613482819:0;vim main.rs
+: 1613483010:0;rg pid
+: 1613484671:0;cat .github/workflows/build.yml
+: 1613484673:0;vim .github/workflows/build.yml
+: 1613484682:0;cd cntr
+: 1613980333:0;git checkout https://github.com/Mic92/envfs/pull/15
+: 1613980340:0;cargo vendor
+: 1613980365:0;tig
+: 1613980378:0;git add vendor/
+: 1613980379:0;tig
+: 1614470991:0;git pull
+: 1614470995:0;tig
+: 1614471003:0;git checkout master
+: 1614471006:0;git checkout main
+: 1614471045:0;git pull
+: 1614471052:0;ls
+: 1614471057:0;cargo build
+: 1614471078:0;sudo ./target/debug/envfs foo
+: 1614471080:0;mkdir foo
+: 1614471082:0;sudo ./target/debug/envfs foo
+: 1614471085:0;ls -la foo/bar
+: 1614471094:0;vim src/main.rs
+: 1614471106:0;vim default.nix
+: 1614471128:0;vim src/fs.rs
+: 1614472070:0;cargo build
+: 1614472333:0;sudo umount foo
+: 1614472341:0;which exa
+: 1614472348:0;sudo ./target/debug/envfs foo
+: 1614472353:0;/home/joerg/.nix-profile/bin/exa foo/bar
+: 1614472356:0;/home/joerg/.nix-profile/bin/exa foo/bash
+: 1614472359:0;/home/joerg/.nix-profile/bin/exa -l foo/bash
+: 1614472369:0;PATH= /home/joerg/.nix-profile/bin/exa -l foo/bash
+: 1614472376:0;unset PATH
+: 1614472377:0;PATH= /home/joerg/.nix-profile/bin/exa -l foo/bash
+: 1614472380:0;tig
+: 1614472409:0;PATH= /home/joerg/.nix-profile/bin/exa -l foo/python
+: 1614472415:0;unset PATH
+: 1614472422:0;PATH= /home/joerg/.nix-profile/bin/exa -l foo/sh
+: 1614472430:0;cat /home/joerg/.nix-profile/bin/exa
+: 1614472440:0;unset ls
+: 1614472443:0;tig
+: 1614472475:0;cargo build
+: 1614472478:0;sudo umount foo
+: 1614472488:0;sudo ./target/debug/envfs foo
+: 1614472503:0;unset PATH
+: 1614472505:0;ls
+: 1614472517:0;/home/joerg/.nix-profile/bin/exa -l foo/python
+: 1614472532:0;tempdir
+: 1614472808:0;ls
+: 1614472815:0;vim src/fs.rs
+: 1614472839:0;cargo build
+: 1614472841:0;sudo umount foo
+: 1614472847:0;sudo ./target/debug/envfs foo
+: 1614472901:0;tig
+: 1614472982:0;cargo build
+: 1614472984:0;sudo umount foo
+: 1614472987:0;sudo ./target/debug/envfs foo
+: 1614472994:0;cd
+: 1614473018:75;tig
+: 1614473219:0;git comma
+: 1614473281:0;cargo clippy
+: 1614473286:0;umount foo
+: 1614473287:0;sudo umount foo
+: 1614473290:0;cargo clippy
+: 1614473294:0;cargo clean
+: 1614473299:0;cargo clippy
+: 1614473308:0;tig
+: 1614473411:0;git comma
+: 1614473440:0;tig
+: 1614473448:0;git checkout -b fix
+: 1614473450:0;git push origin fix
+: 1614473477:0;vim .github/workflows/build.yml
+: 1614473487:0;cargo fmt
+: 1614473488:0;tig
+: 1614473496:0;git push origin +fix
+: 1614473509:0;tig
+: 1614473547:0;git push origin +fix
+: 1614473684:0;tig
+: 1614554111:0;tig
+: 1614554147:0;git checkout main
+: 1614554149:0;git pull
+: 1614554155:0;git rebase --continue
+: 1614554158:0;tig
+: 1614554163:0;git rebase --abort
+: 1614554165:0;git pull
+: 1614554170:0;git rebase --skip
+: 1614554171:0;tig
+: 1614554266:0;hm-switch -L --builders ''
+: 1614554725:0;nix log /nix/store/7nvzc6gyibyxl3llqmyw3p4760l1vn1f-emacs-straight-packages.json.drv
+: 1614554869:0;tig
+: 1614554872:0;homeshick cd dotfiles
+: 1614554912:0;cd /nix/store/qqvx6wm2d3bv13sadj20xbwz7a9fshz0-emacs-27.1/
+: 1614609446:0;cat .github/dependabot.yml
+: 1615230310:0;git pull
+: 1615230315:0;cargo update
+: 1615230325:0;git checkout dependabot/cargo/cntr-fuse-0.4.1
+: 1615230331:0;cargo vendor
+: 1615230333:0;tig
+: 1615230351:0;git push
+: 1615230361:0;git checkout dependabot/cargo/libc-0.2.85
+: 1615230368:0;git checkout dependabot/cargo/libc-0.2.88
+: 1615230373:0;cargo vendor
+: 1615230396:0;tig
+: 1615230496:0;git push
+: 1615230734:0;git fetch
+: 1615230741:0;git checkout dependabot/cargo/libc-0.2.88
+: 1615230746:0;git pull
+: 1615230753:0;cargo vendor
+: 1615230754:0;tig
+: 1615230776:0;git add .

@@ -32,6 +32,8 @@ pub type Elf64_Sxword = i64;
 pub type Elf64_Word = u32;
 pub type Elf64_Xword = u64;
 
+pub type iconv_t = *mut ::c_void;
+
 cfg_if! {
     if #[cfg(target_pointer_width = "64")] {
         type Elf_Addr = Elf64_Addr;
@@ -270,6 +272,42 @@ s! {
         pub piod_len: ::size_t,
     }
 
+    // bpf.h
+
+    pub struct bpf_program {
+        pub bf_len: ::c_uint,
+        pub bf_insns: *mut bpf_insn,
+    }
+
+    pub struct bpf_stat {
+        pub bs_recv: ::c_uint,
+        pub bs_drop: ::c_uint,
+    }
+
+    pub struct bpf_version {
+        pub bv_major: ::c_ushort,
+        pub bv_minor: ::c_ushort,
+    }
+
+    pub struct bpf_hdr {
+        pub bh_tstamp: ::timeval,
+        pub bh_caplen: u32,
+        pub bh_datalen: u32,
+        pub bh_hdrlen: ::c_ushort,
+    }
+
+    pub struct bpf_insn {
+        pub code: ::c_ushort,
+        pub jt: ::c_uchar,
+        pub jf: ::c_uchar,
+        pub k: u32,
+    }
+
+    pub struct bpf_dltlist {
+        bfl_len: ::c_uint,
+        bfl_list: *mut ::c_uint,
+    }
+
     // elf.h
 
     pub struct Elf32_Phdr {
@@ -356,6 +394,14 @@ cfg_if! {
         }
     }
 }
+
+// Non-public helper constant
+#[cfg(all(not(libc_const_size_of), target_pointer_width = "32"))]
+const SIZEOF_LONG: usize = 4;
+#[cfg(all(not(libc_const_size_of), target_pointer_width = "64"))]
+const SIZEOF_LONG: usize = 8;
+#[cfg(libc_const_size_of)]
+const SIZEOF_LONG: usize = ::mem::size_of::<::c_long>();
 
 #[deprecated(
     since = "0.2.64",
@@ -1214,8 +1260,7 @@ pub const ONLRET: ::tcflag_t = 0x40;
 pub const CMGROUP_MAX: usize = 16;
 
 // https://github.com/freebsd/freebsd/blob/master/sys/net/bpf.h
-// sizeof(long)
-pub const BPF_ALIGNMENT: ::c_int = 8;
+pub const BPF_ALIGNMENT: usize = SIZEOF_LONG;
 
 // Values for rtprio struct (prio field) and syscall (function argument)
 pub const RTP_PRIO_MIN: ::c_ushort = 0;
@@ -1593,6 +1638,19 @@ extern "C" {
         >,
         data: *mut ::c_void,
     ) -> ::c_int;
+
+    pub fn iconv_open(
+        tocode: *const ::c_char,
+        fromcode: *const ::c_char,
+    ) -> iconv_t;
+    pub fn iconv(
+        cd: iconv_t,
+        inbuf: *mut *mut ::c_char,
+        inbytesleft: *mut ::size_t,
+        outbuf: *mut *mut ::c_char,
+        outbytesleft: *mut ::size_t,
+    ) -> ::size_t;
+    pub fn iconv_close(cd: iconv_t) -> ::c_int;
 }
 
 #[link(name = "rt")]
