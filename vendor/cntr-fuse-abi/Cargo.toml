@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "cntr-fuse-abi"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Jörg Thalheim <joerg@thalheim.io>"]
 description = "ABI types for communicating with the FUSE kernel interface"
 homepage = "https://github.com/Mic92/cntr-fuse"

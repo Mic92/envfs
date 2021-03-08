@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "cntr-fuse-sys"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Jörg Thalheim <joerg@thalheim.io>"]
 build = "build.rs"
 links = "fuse"
