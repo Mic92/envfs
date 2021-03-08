@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "cntr-fuse"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Jörg Thalheim <joerg@thalheim.io>"]
 description = "Rust library for filesystems in userspace (FUSE) (fork with functionality needed for the cntr project)"
 homepage = "https://github.com/Mic92/cntr-fuse"
@@ -31,10 +31,10 @@ required-features = ["libfuse"]
 name = "null"
 required-features = ["libfuse"]
 [dependencies.cntr-fuse-abi]
-version = "=0.4.0"
+version = "=0.4.1"
 
 [dependencies.cntr-fuse-sys]
-version = "=0.4.0"
+version = "=0.4.1"
 
 [dependencies.libc]
 version = "0.2.51"
@@ -42,7 +42,7 @@ version = "0.2.51"
 [dependencies.log]
 version = "0.4.6"
 [dev-dependencies.env_logger]
-version = "0.6.0"
+version = "0.8.3"
 
 [features]
 default = ["libfuse"]
