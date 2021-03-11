@@ -1,5 +1,6 @@
 use cntr_fuse::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
+    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyStatfs,
+    Request,
 };
 use concurrent_hashmap::ConcHashMap;
 use libc::ENOENT;
@@ -311,6 +312,10 @@ impl Filesystem for EnvFs {
         }
         tryfuse!(self.inode(ino), reply);
         reply.attr(&TTL, &symlink_attr(ino));
+    }
+
+    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+        reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
     }
 
     fn readdir(
