@@ -10,9 +10,10 @@ makeTest {
   testScript = ''
     start_all()
     machine.succeed(
-        "PATH=${pkgs.coreutils}/bin readlink /usr/bin/sh /usr/bin/cp",
-        # test fallback paths works
-        "PATH= ${pkgs.coreutils}/bin/readlink /usr/bin/sh /usr/bin/env /bin/sh",
+        "PATH=${pkgs.coreutils}/bin ${pkgs.runtimeShell} -c '/usr/bin/cp --version'",
+        # check fallback paths
+        "PATH= ${pkgs.runtimeShell} -c '/usr/bin/sh --version'",
+        "PATH= ${pkgs.runtimeShell} -c '/usr/bin/env --version'",
     )
   '';
 } {
