@@ -1,14 +1,13 @@
 use cntr_fuse::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyStatfs,
-    Request,
+    ReplyXattr, Request,
 };
 use concurrent_hashmap::ConcHashMap;
-use libc::ENOENT;
+use libc::{c_long, ENODATA, ENOENT};
 use log::debug;
 use nix::errno::Errno;
 use nix::unistd::{self, Pid};
 use simple_error::try_with;
-use std::cmp;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -16,12 +15,14 @@ use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
+use std::{cmp, fs};
 
 use crate::fusefd;
 use crate::num_cpus;
@@ -29,6 +30,8 @@ use crate::result::Result;
 use crate::setrlimit::{setrlimit, Rlimit};
 
 const TTL: Duration = Duration::from_secs(1);
+
+const ENVFS_MAGIC: u32 = 0xc7653a76;
 
 const ROOT_DIR_ATTR: FileAttr = FileAttr {
     ino: cntr_fuse::FUSE_ROOT_ID,
@@ -38,11 +41,11 @@ const ROOT_DIR_ATTR: FileAttr = FileAttr {
     mtime: UNIX_EPOCH,
     ctime: UNIX_EPOCH,
     crtime: UNIX_EPOCH,
+    kind: FileType::Directory,
+    perm: 0o755,
+    nlink: ENVFS_MAGIC,
     uid: 0,
     gid: 0,
-    perm: 0o755,
-    kind: FileType::Directory,
-    nlink: 2,
     rdev: 0,
     // Flags (OS X only, see chflags(2))
     flags: 0,
@@ -54,7 +57,9 @@ struct InodeCounter {
 }
 
 pub struct Inode {
+    pub name: PathBuf,
     pub path: PathBuf,
+    pub pid: Pid,
     pub kind: FileType,
     pub ino: u64,
     pub nlookup: RwLock<u64>,
@@ -212,6 +217,14 @@ pub fn _which<P>(path: &PathBuf, exe_name: P) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
+    let skip_path = match path.symlink_metadata() {
+        Ok(stat) => stat.nlink() as u32 == ENVFS_MAGIC,
+        Err(_) => true,
+    };
+    if skip_path {
+        return None;
+    }
+
     let full_path = path.join(&exe_name);
     let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
     if res.is_ok() {
@@ -261,6 +274,36 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     Ok(res)
 }
 
+fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
+where
+    P: AsRef<Path>,
+{
+    let env = match read_environment(pid) {
+        Ok(env) => env,
+        Err(_) => {
+            return None;
+        }
+    };
+    let path = match env.get(OsStr::new("PATH")) {
+        Some(v) => v,
+        None => {
+            return None;
+        }
+    };
+    which(path, &name, fallback_paths)
+}
+
+fn get_syscall(pid: Pid) -> Result<c_long> {
+    let path = format!("/proc/{}/syscall", pid.as_raw());
+    let line = try_with!(fs::read_to_string(path), "cannot read syscall file");
+    let fields = line.splitn(2, ' ').collect::<Vec<_>>();
+    Ok(try_with!(
+        fields[0].parse::<c_long>(),
+        "cannot parse syscall number {}",
+        fields[0]
+    ))
+}
+
 impl Filesystem for EnvFs {
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         // no subdirectories
@@ -269,28 +312,26 @@ impl Filesystem for EnvFs {
             return;
         }
 
-        let env = match read_environment(Pid::from_raw(req.pid() as i32)) {
-            Ok(env) => env,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
+        let pid = Pid::from_raw(req.pid() as i32);
+        let skip_lookup = match get_syscall(pid) {
+            Ok(num) => num != libc::SYS_execve,
+            Err(_) => false,
         };
-        let path = match env.get(OsStr::new("PATH")) {
-            Some(v) => v,
-            None => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        match which(path, &name, self.fallback_paths.as_slice()) {
+        if skip_lookup {
+            reply.error(ENOENT);
+            return;
+        }
+
+        match resolve_target(pid, &name, self.fallback_paths.as_slice()) {
             Some(target) => {
                 let (next_number, generation) = self.next_inode_number();
 
                 let attr = symlink_attr(next_number);
 
                 let inode = Arc::new(Inode {
+                    name: PathBuf::from(name),
                     path: target,
+                    pid,
                     kind: attr.kind,
                     ino: attr.ino,
                     nlookup: RwLock::new(1),
@@ -315,7 +356,7 @@ impl Filesystem for EnvFs {
     }
 
     fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
-        reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
+        reply.error(ENOENT);
     }
 
     fn readdir(
@@ -326,7 +367,7 @@ impl Filesystem for EnvFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        if ino != 1 {
+        if ino != cntr_fuse::FUSE_ROOT_ID {
             reply.error(ENOENT);
             return;
         }
@@ -365,9 +406,33 @@ impl Filesystem for EnvFs {
     fn destroy(&mut self, _req: &Request) {
         self.inodes.clear();
     }
+    fn getxattr(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _name: &OsStr,
+        _size: u32,
+        reply: ReplyXattr,
+    ) {
+        reply.error(ENODATA);
+    }
 
-    fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
+    fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
         let inode = tryfuse!(self.inode(ino), reply);
+        let pid = Pid::from_raw(req.pid() as i32);
+        if inode.pid != pid {
+            // unlikely
+            match resolve_target(pid, &inode.name, &self.fallback_paths) {
+                Some(target) => {
+                    reply.data(target.as_os_str().as_bytes());
+                    return;
+                }
+                None => {
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        }
         let data = inode.path.as_os_str().as_bytes();
         reply.data(data);
     }
