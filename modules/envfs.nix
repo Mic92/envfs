@@ -3,7 +3,7 @@
 let
   mounts = {
     "/usr/bin" = {
-      device = "envfs";
+      device = "none";
       fsType = "envfs";
       options = [
         "fallback-path=${pkgs.runCommand "fallback-path" {} ''
