@@ -14,6 +14,9 @@ makeTest {
         # check fallback paths
         "PATH= ${pkgs.runtimeShell} -c '/usr/bin/sh --version'",
         "PATH= ${pkgs.runtimeShell} -c '/usr/bin/env --version'",
+        # we only get stat() for fallback paths
+        "PATH=${pkgs.coreutils}/bin ${pkgs.runtimeShell} -c '[[ ! -f /usr/bin/cp ]]'",
+        "PATH= ${pkgs.runtimeShell} -c '[[ -f /usr/bin/sh ]]'",
     )
   '';
 } {
