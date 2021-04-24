@@ -15,3 +15,6 @@ cntr-fuse = { version = "0.4.*", default-features = false }
 [dependencies.concurrent-hashmap]
 version = "0.2.*"
 default-features = false
+
+[profile.release]
+lto = true
