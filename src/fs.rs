@@ -59,7 +59,6 @@ struct InodeCounter {
 pub struct Inode {
     pub name: PathBuf,
     pub path: PathBuf,
-    pub fallback_path: bool,
     pub pid: Pid,
     pub kind: FileType,
     pub ino: u64,
@@ -235,34 +234,19 @@ where
     }
 }
 
-struct Executable {
-    path: PathBuf,
-    fallback: bool,
-}
-
-fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<Executable>
+fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
-    let fallback_exe = fallback_paths
-        .iter()
-        .filter_map(|dir| {
-            _which(&dir, &exe_name).map(|p| Executable {
-                path: p,
-                fallback: true,
-            })
-        })
-        .next();
-
     let exe = env::split_paths(&path_env)
-        .filter_map(|dir| {
-            _which(&dir, &exe_name).map(|p| Executable {
-                path: p,
-                fallback: fallback_exe.is_some(),
-            })
-        })
+        .filter_map(|dir| _which(&dir, &exe_name))
         .next();
-    exe.or(fallback_exe)
+    exe.or_else(|| {
+        fallback_paths
+            .iter()
+            .filter_map(|dir| _which(&dir, &exe_name))
+            .next()
+    })
 }
 
 fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
@@ -290,7 +274,7 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     Ok(res)
 }
 
-fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<Executable>
+fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -330,7 +314,15 @@ impl Filesystem for EnvFs {
 
         let pid = Pid::from_raw(req.pid() as i32);
         let skip_lookup = match get_syscall(pid) {
-            Ok(num) => num != libc::SYS_execve,
+            Ok(num) => {
+                if num != libc::SYS_execve {
+                    // Ugly work around for `make`, which does stat on `/bin/sh`
+                    // We should fix our nixpkgs make to not do that and rely on `sh`
+                    which(&OsStr::new(""), &name, &self.fallback_paths).is_some()
+                } else {
+                    false
+                }
+            }
             Err(_) => false,
         };
         if skip_lookup {
@@ -339,15 +331,14 @@ impl Filesystem for EnvFs {
         }
 
         match resolve_target(pid, &name, self.fallback_paths.as_slice()) {
-            Some(exe) => {
+            Some(target) => {
                 let (next_number, generation) = self.next_inode_number();
 
                 let attr = symlink_attr(next_number);
 
                 let inode = Arc::new(Inode {
                     name: PathBuf::from(name),
-                    path: exe.path,
-                    fallback_path: exe.fallback,
+                    path: target,
                     pid,
                     kind: attr.kind,
                     ino: attr.ino,
@@ -372,16 +363,8 @@ impl Filesystem for EnvFs {
         reply.attr(&TTL, &symlink_attr(ino));
     }
 
-    fn statfs(&mut self, _req: &Request, ino: u64, reply: ReplyStatfs) {
-        let inode = tryfuse!(self.inode(ino), reply);
-
-        if inode.fallback_path {
-            // Ugly work around for `make`, which does stat on `/bin/sh`
-            // We should fix our nixpkgs make to not do that and rely on `sh`
-            reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
-        } else {
-            reply.error(ENOENT);
-        }
+    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+        reply.error(ENOENT);
     }
 
     fn readdir(
@@ -448,8 +431,8 @@ impl Filesystem for EnvFs {
         if inode.pid != pid {
             // unlikely
             match resolve_target(pid, &inode.name, &self.fallback_paths) {
-                Some(exe) => {
-                    reply.data(exe.path.as_os_str().as_bytes());
+                Some(target) => {
+                    reply.data(target.as_os_str().as_bytes());
                     return;
                 }
                 None => {
