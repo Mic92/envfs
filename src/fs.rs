@@ -300,6 +300,15 @@ where
             return None;
         }
     };
+    if !match env.get(OsStr::new("ENVFS_RESOLVE_ALWAYS")) {
+        Some(_) => true,
+        None => match get_syscall(pid) {
+            Ok(num) => num == libc::SYS_execve,
+            Err(_) => true,
+        },
+    } {
+        return None;
+    }
     let path = match env.get(OsStr::new("PATH")) {
         Some(v) => v,
         None => {
@@ -329,14 +338,6 @@ impl Filesystem for EnvFs {
         }
 
         let pid = Pid::from_raw(req.pid() as i32);
-        let skip_lookup = match get_syscall(pid) {
-            Ok(num) => num != libc::SYS_execve,
-            Err(_) => false,
-        };
-        if skip_lookup {
-            reply.error(ENOENT);
-            return;
-        }
 
         match resolve_target(pid, &name, self.fallback_paths.as_slice()) {
             Some(exe) => {
