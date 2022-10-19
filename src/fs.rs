@@ -215,7 +215,7 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
-fn _which<P>(path: &PathBuf, exe_name: P) -> Option<PathBuf>
+fn _which<P>(path: &Path, exe_name: P) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -249,7 +249,7 @@ where
     let fallback_exe = fallback_paths
         .iter()
         .filter_map(|dir| {
-            _which(&dir, &exe_name).map(|p| Executable {
+            _which(dir, &exe_name).map(|p| Executable {
                 path: p,
                 fallback: true,
             })
@@ -309,7 +309,7 @@ where
             return None;
         }
     };
-    if args.len() == 0 {
+    if args.is_empty() {
         debug!("no syscall arguments received from /proc/<pid>/syscall");
         return None;
     }
@@ -427,7 +427,7 @@ fn get_env_from_mem(pid: Pid, envp: c_ulong) -> Result<HashMap<OsString, OsStrin
                 OsString::from_vec(pair[1].to_vec()),
             )
         };
-        buf.resize(0, 0);
+        buf.clear();
         Ok(pair)
     });
     env_vars.collect::<Result<HashMap<_, _>>>()
