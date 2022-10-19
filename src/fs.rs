@@ -3,7 +3,7 @@ use cntr_fuse::{
     ReplyXattr, Request,
 };
 use concurrent_hashmap::ConcHashMap;
-use libc::{c_long, ENODATA, ENOENT};
+use libc::{c_ulong, ENODATA, ENOENT};
 use log::debug;
 use nix::errno::Errno;
 use nix::unistd::{self, Pid};
@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io;
+use std::io::Seek;
+use std::io::{self, Read, SeekFrom};
 use std::io::{BufRead, BufReader};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
@@ -235,6 +236,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct Executable {
     path: PathBuf,
     fallback: bool,
@@ -300,14 +302,54 @@ where
             return None;
         }
     };
-    if !match env.get(OsStr::new("ENVFS_RESOLVE_ALWAYS")) {
-        Some(_) => true,
-        None => match get_syscall(pid) {
-            Ok(num) => num == libc::SYS_execve,
-            Err(_) => true,
-        },
-    } {
+    let args = match get_syscall_args(pid) {
+        Ok(args) => args,
+        Err(e) => {
+            debug!("Could not parse syscall arguments: {}", e);
+            return None;
+        }
+    };
+    if args.len() == 0 {
+        debug!("no syscall arguments received from /proc/<pid>/syscall");
         return None;
+    }
+    // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
+    if args[0] != libc::SYS_open as u64
+        && args[0] != libc::SYS_openat as u64
+        && args[0] != libc::SYS_execve as u64
+        && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"))
+    {
+        return None;
+    }
+    if args[0] == libc::SYS_execve as u64 {
+        // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
+        if args.len() < 4 {
+            debug!(
+                "expected at least 4 syscall arguments in execve syscall, got {}",
+                args.len() - 1
+            );
+            return None;
+        }
+        let envp = args[3];
+        match get_env_from_mem(pid, envp) {
+            Ok(env) => {
+                let path = match env.get(OsStr::new("PATH")) {
+                    Some(v) => v,
+                    None => {
+                        return None;
+                    }
+                };
+                if let Some(exe) = which(path, &name, &[]) {
+                    return Some(exe);
+                }
+            }
+            Err(e) => {
+                debug!(
+                    "Could not read environment variables from child from memory: {}",
+                    e
+                )
+            }
+        }
     }
     let path = match env.get(OsStr::new("PATH")) {
         Some(v) => v,
@@ -318,15 +360,77 @@ where
     which(path, &name, fallback_paths)
 }
 
-fn get_syscall(pid: Pid) -> Result<c_long> {
+fn get_syscall_args(pid: Pid) -> Result<Vec<c_ulong>> {
     let path = format!("/proc/{}/syscall", pid.as_raw());
     let line = try_with!(fs::read_to_string(path), "cannot read syscall file");
-    let fields = line.splitn(2, ' ').collect::<Vec<_>>();
+    let res = line
+        .trim_end()
+        .split(' ')
+        .enumerate()
+        .map(|(i, col)| {
+            if i == 0 {
+                col.parse::<c_ulong>()
+            } else {
+                c_ulong::from_str_radix(&col[2..], 16)
+            }
+        })
+        .collect::<std::result::Result<Vec<_>, _>>();
     Ok(try_with!(
-        fields[0].parse::<c_long>(),
-        "cannot parse syscall number {}",
-        fields[0]
+        res,
+        "syscall arguments '{}' cannot be parsed as integer",
+        line
     ))
+}
+
+fn get_env_from_mem(pid: Pid, envp: c_ulong) -> Result<HashMap<OsString, OsString>> {
+    let path = format!("/proc/{}/mem", pid.as_raw());
+    let f = try_with!(File::open(&path), "failed to open {}", path);
+    let mut reader = BufReader::new(f);
+    try_with!(
+        reader.seek(SeekFrom::Start(envp as u64)),
+        "failed to see in {}",
+        &path
+    );
+    let mut pointer_buf = [0; 8];
+
+    // read content of envp
+    let mut env_pointers: Vec<c_ulong> = vec![];
+    loop {
+        let num = try_with!(reader.read(&mut pointer_buf), "error reading memory");
+        if num < 4 {
+            break;
+        }
+        let p = c_ulong::from_ne_bytes(pointer_buf);
+        // envp is terminated by a NULL pointer
+        if p == 0 {
+            break;
+        }
+        env_pointers.push(p);
+    }
+
+    let mut buf = vec![];
+    // dereference strings from envp
+    let env_vars = env_pointers.iter().map(|p| {
+        try_with!(
+            reader.seek(SeekFrom::Start(*p as u64)),
+            "failed to seek to string"
+        );
+        try_with!(reader.read_until(b'\0', &mut buf), "failed to read string");
+        let pair = buf[..buf.len() - 1]
+            .splitn(2, |c| *c == b'=')
+            .collect::<Vec<_>>();
+        let pair = if pair.len() != 2 {
+            (OsString::from_vec(pair[0].to_vec()), OsString::new())
+        } else {
+            (
+                OsString::from_vec(pair[0].to_vec()),
+                OsString::from_vec(pair[1].to_vec()),
+            )
+        };
+        buf.resize(0, 0);
+        Ok(pair)
+    });
+    env_vars.collect::<Result<HashMap<_, _>>>()
 }
 
 impl Filesystem for EnvFs {
