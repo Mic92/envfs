@@ -1,0 +1,11 @@
+# One CLI to format the code tree - https://github.com/numtide/treefmt
+
+[formatter.rust]
+# Formatter to run
+command = "rustfmt"
+# Command-line arguments for the command
+options = []
+# Glob pattern of files to include
+includes = [ "*.rs" ]
+# Glob patterns of files to exclude
+excludes = []

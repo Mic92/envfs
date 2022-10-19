@@ -3,7 +3,7 @@ use cntr_fuse::{
     ReplyXattr, Request,
 };
 use concurrent_hashmap::ConcHashMap;
-use libc::{c_long, ENODATA, ENOENT};
+use libc::{c_ulong, ENODATA, ENOENT};
 use log::debug;
 use nix::errno::Errno;
 use nix::unistd::{self, Pid};
@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io;
+use std::io::Seek;
+use std::io::{self, Read, SeekFrom};
 use std::io::{BufRead, BufReader};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
@@ -59,7 +60,6 @@ struct InodeCounter {
 pub struct Inode {
     pub name: PathBuf,
     pub path: PathBuf,
-    pub fallback_path: bool,
     pub pid: Pid,
     pub kind: FileType,
     pub ino: u64,
@@ -214,7 +214,7 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
-fn _which<P>(path: &PathBuf, exe_name: P) -> Option<PathBuf>
+fn _which<P>(path: &Path, exe_name: P) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -235,34 +235,13 @@ where
     }
 }
 
-struct Executable {
-    path: PathBuf,
-    fallback: bool,
-}
-
-fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<Executable>
+fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
-    let fallback_exe = fallback_paths
-        .iter()
-        .filter_map(|dir| {
-            _which(&dir, &exe_name).map(|p| Executable {
-                path: p,
-                fallback: true,
-            })
-        })
-        .next();
+    let exe = env::split_paths(&path_env).find_map(|dir| _which(&dir, &exe_name));
 
-    let exe = env::split_paths(&path_env)
-        .filter_map(|dir| {
-            _which(&dir, &exe_name).map(|p| Executable {
-                path: p,
-                fallback: fallback_exe.is_some(),
-            })
-        })
-        .next();
-    exe.or(fallback_exe)
+    exe.or_else(|| fallback_paths.iter().find_map(|dir| _which(dir, &exe_name)))
 }
 
 fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
@@ -290,7 +269,7 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     Ok(res)
 }
 
-fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<Executable>
+fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -300,24 +279,129 @@ where
             return None;
         }
     };
-    let path = match env.get(OsStr::new("PATH")) {
-        Some(v) => v,
-        None => {
+    let args = match get_syscall_args(pid) {
+        Ok(args) => args,
+        Err(e) => {
+            debug!("Could not parse syscall arguments: {}", e);
             return None;
         }
+    };
+    if args.is_empty() {
+        debug!("no syscall arguments received from /proc/<pid>/syscall");
+        return None;
+    }
+    // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
+    if args[0] != libc::SYS_open as u64
+        && args[0] != libc::SYS_openat as u64
+        && args[0] != libc::SYS_execve as u64
+        && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"))
+    {
+        return None;
+    }
+    if args[0] == libc::SYS_execve as u64 {
+        // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
+        if args.len() < 4 {
+            debug!(
+                "expected at least 4 syscall arguments in execve syscall, got {}",
+                args.len() - 1
+            );
+            return None;
+        }
+        let envp = args[3];
+        match get_env_from_mem(pid, envp) {
+            Ok(env) => {
+                if let Some(path) = env.get(OsStr::new("PATH")) {
+                    if let Some(exe) = which(path, &name, &[]) {
+                        return Some(exe);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!(
+                    "Could not read environment variables from child from memory: {}",
+                    e
+                )
+            }
+        }
+    }
+    let path = match env.get(OsStr::new("PATH")) {
+        Some(v) => v,
+        None => OsStr::new(""),
     };
     which(path, &name, fallback_paths)
 }
 
-fn get_syscall(pid: Pid) -> Result<c_long> {
+fn get_syscall_args(pid: Pid) -> Result<Vec<c_ulong>> {
     let path = format!("/proc/{}/syscall", pid.as_raw());
     let line = try_with!(fs::read_to_string(path), "cannot read syscall file");
-    let fields = line.splitn(2, ' ').collect::<Vec<_>>();
+    let res = line
+        .trim_end()
+        .split(' ')
+        .enumerate()
+        .map(|(i, col)| {
+            if i == 0 {
+                col.parse::<c_ulong>()
+            } else {
+                c_ulong::from_str_radix(&col[2..], 16)
+            }
+        })
+        .collect::<std::result::Result<Vec<_>, _>>();
     Ok(try_with!(
-        fields[0].parse::<c_long>(),
-        "cannot parse syscall number {}",
-        fields[0]
+        res,
+        "syscall arguments '{}' cannot be parsed as integer",
+        line
     ))
+}
+
+fn get_env_from_mem(pid: Pid, envp: c_ulong) -> Result<HashMap<OsString, OsString>> {
+    let path = format!("/proc/{}/mem", pid.as_raw());
+    let f = try_with!(File::open(&path), "failed to open {}", path);
+    let mut reader = BufReader::new(f);
+    try_with!(
+        reader.seek(SeekFrom::Start(envp as u64)),
+        "failed to see in {}",
+        &path
+    );
+    let mut pointer_buf = [0; 8];
+
+    // read content of envp
+    let mut env_pointers: Vec<c_ulong> = vec![];
+    loop {
+        let num = try_with!(reader.read(&mut pointer_buf), "error reading memory");
+        if num < 4 {
+            break;
+        }
+        let p = c_ulong::from_ne_bytes(pointer_buf);
+        // envp is terminated by a NULL pointer
+        if p == 0 {
+            break;
+        }
+        env_pointers.push(p);
+    }
+
+    let mut buf = vec![];
+    // dereference strings from envp
+    let env_vars = env_pointers.iter().map(|p| {
+        try_with!(
+            reader.seek(SeekFrom::Start(*p as u64)),
+            "failed to seek to string"
+        );
+        try_with!(reader.read_until(b'\0', &mut buf), "failed to read string");
+        let pair = buf[..buf.len() - 1]
+            .splitn(2, |c| *c == b'=')
+            .collect::<Vec<_>>();
+        let pair = if pair.len() != 2 {
+            (OsString::from_vec(pair[0].to_vec()), OsString::new())
+        } else {
+            (
+                OsString::from_vec(pair[0].to_vec()),
+                OsString::from_vec(pair[1].to_vec()),
+            )
+        };
+        buf.clear();
+        Ok(pair)
+    });
+    env_vars.collect::<Result<HashMap<_, _>>>()
 }
 
 impl Filesystem for EnvFs {
@@ -329,25 +413,16 @@ impl Filesystem for EnvFs {
         }
 
         let pid = Pid::from_raw(req.pid() as i32);
-        let skip_lookup = match get_syscall(pid) {
-            Ok(num) => num != libc::SYS_execve,
-            Err(_) => false,
-        };
-        if skip_lookup {
-            reply.error(ENOENT);
-            return;
-        }
 
         match resolve_target(pid, &name, self.fallback_paths.as_slice()) {
-            Some(exe) => {
+            Some(path) => {
                 let (next_number, generation) = self.next_inode_number();
 
                 let attr = symlink_attr(next_number);
 
                 let inode = Arc::new(Inode {
                     name: PathBuf::from(name),
-                    path: exe.path,
-                    fallback_path: exe.fallback,
+                    path,
                     pid,
                     kind: attr.kind,
                     ino: attr.ino,
@@ -372,16 +447,8 @@ impl Filesystem for EnvFs {
         reply.attr(&TTL, &symlink_attr(ino));
     }
 
-    fn statfs(&mut self, _req: &Request, ino: u64, reply: ReplyStatfs) {
-        let inode = tryfuse!(self.inode(ino), reply);
-
-        if inode.fallback_path {
-            // Ugly work around for `make`, which does stat on `/bin/sh`
-            // We should fix our nixpkgs make to not do that and rely on `sh`
-            reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
-        } else {
-            reply.error(ENOENT);
-        }
+    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+        reply.error(ENOENT);
     }
 
     fn readdir(
@@ -448,8 +515,8 @@ impl Filesystem for EnvFs {
         if inode.pid != pid {
             // unlikely
             match resolve_target(pid, &inode.name, &self.fallback_paths) {
-                Some(exe) => {
-                    reply.data(exe.path.as_os_str().as_bytes());
+                Some(target) => {
+                    reply.data(target.as_os_str().as_bytes());
                     return;
                 }
                 None => {
