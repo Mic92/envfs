@@ -6,21 +6,24 @@
 
   outputs = { self, nixpkgs, utils }: {
     nixosModules.envfs = import ./modules/envfs.nix;
-  } // utils.lib.eachSystem ["x86_64-linux" "aarch64-linux"] (system: let
-    pkgs = nixpkgs.legacyPackages.${system};
-  in {
-    packages.envfs = pkgs.callPackage ./default.nix {
-      packageSrc = self;
-    };
-    defaultPackage = self.packages.${system}.envfs;
-  }) // {
-    checks.x86_64-linux.integration-tests = let
-      system = "x86_64-linux";
+  } // utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
+    let
       pkgs = nixpkgs.legacyPackages.${system};
-    in import ./nixos-test.nix {
+    in
+    {
+      packages.default = pkgs.callPackage ./default.nix {
+        packageSrc = self;
+      };
+    }) // {
+    checks.x86_64-linux.integration-tests =
+      let
+        system = "x86_64-linux";
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      import ./nixos-test.nix {
         makeTest = import (nixpkgs + "/nixos/tests/make-test-python.nix");
         inherit pkgs;
         inherit (self.packages.${system}) cntr;
-    };
+      };
   };
 }
