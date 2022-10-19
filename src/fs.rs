@@ -60,7 +60,6 @@ struct InodeCounter {
 pub struct Inode {
     pub name: PathBuf,
     pub path: PathBuf,
-    pub fallback_path: bool,
     pub pid: Pid,
     pub kind: FileType,
     pub ino: u64,
@@ -236,35 +235,13 @@ where
     }
 }
 
-#[derive(Debug)]
-struct Executable {
-    path: PathBuf,
-    fallback: bool,
-}
-
-fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<Executable>
+fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
-    let fallback_exe = fallback_paths
-        .iter()
-        .filter_map(|dir| {
-            _which(dir, &exe_name).map(|p| Executable {
-                path: p,
-                fallback: true,
-            })
-        })
-        .next();
+    let exe = env::split_paths(&path_env).find_map(|dir| _which(&dir, &exe_name));
 
-    let exe = env::split_paths(&path_env)
-        .filter_map(|dir| {
-            _which(&dir, &exe_name).map(|p| Executable {
-                path: p,
-                fallback: fallback_exe.is_some(),
-            })
-        })
-        .next();
-    exe.or(fallback_exe)
+    exe.or_else(|| fallback_paths.iter().find_map(|dir| _which(dir, &exe_name)))
 }
 
 fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
@@ -292,7 +269,7 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     Ok(res)
 }
 
-fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<Executable>
+fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -333,14 +310,10 @@ where
         let envp = args[3];
         match get_env_from_mem(pid, envp) {
             Ok(env) => {
-                let path = match env.get(OsStr::new("PATH")) {
-                    Some(v) => v,
-                    None => {
-                        return None;
+                if let Some(path) = env.get(OsStr::new("PATH")) {
+                    if let Some(exe) = which(path, &name, &[]) {
+                        return Some(exe);
                     }
-                };
-                if let Some(exe) = which(path, &name, &[]) {
-                    return Some(exe);
                 }
             }
             Err(e) => {
@@ -353,9 +326,7 @@ where
     }
     let path = match env.get(OsStr::new("PATH")) {
         Some(v) => v,
-        None => {
-            return None;
-        }
+        None => OsStr::new(""),
     };
     which(path, &name, fallback_paths)
 }
@@ -444,15 +415,14 @@ impl Filesystem for EnvFs {
         let pid = Pid::from_raw(req.pid() as i32);
 
         match resolve_target(pid, &name, self.fallback_paths.as_slice()) {
-            Some(exe) => {
+            Some(path) => {
                 let (next_number, generation) = self.next_inode_number();
 
                 let attr = symlink_attr(next_number);
 
                 let inode = Arc::new(Inode {
                     name: PathBuf::from(name),
-                    path: exe.path,
-                    fallback_path: exe.fallback,
+                    path,
                     pid,
                     kind: attr.kind,
                     ino: attr.ino,
@@ -477,16 +447,8 @@ impl Filesystem for EnvFs {
         reply.attr(&TTL, &symlink_attr(ino));
     }
 
-    fn statfs(&mut self, _req: &Request, ino: u64, reply: ReplyStatfs) {
-        let inode = tryfuse!(self.inode(ino), reply);
-
-        if inode.fallback_path {
-            // Ugly work around for `make`, which does stat on `/bin/sh`
-            // We should fix our nixpkgs make to not do that and rely on `sh`
-            reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
-        } else {
-            reply.error(ENOENT);
-        }
+    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+        reply.error(ENOENT);
     }
 
     fn readdir(
@@ -553,8 +515,8 @@ impl Filesystem for EnvFs {
         if inode.pid != pid {
             // unlikely
             match resolve_target(pid, &inode.name, &self.fallback_paths) {
-                Some(exe) => {
-                    reply.data(exe.path.as_os_str().as_bytes());
+                Some(target) => {
+                    reply.data(target.as_os_str().as_bytes());
                     return;
                 }
                 None => {

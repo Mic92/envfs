@@ -10,13 +10,15 @@ makeTest {
   testScript = ''
     start_all()
     machine.succeed(
-        "PATH=${pkgs.coreutils}/bin ${pkgs.runtimeShell} -c '/usr/bin/cp --version'",
+        "PATH=${pkgs.coreutils}/bin /usr/bin/cp --version",
         # check fallback paths
-        "PATH= ${pkgs.runtimeShell} -c '/usr/bin/sh --version'",
-        "PATH= ${pkgs.runtimeShell} -c '/usr/bin/env --version'",
-        # we only get stat() for fallback paths
-        "PATH=${pkgs.coreutils}/bin ${pkgs.runtimeShell} -c '[[ ! -f /usr/bin/cp ]]'",
-        "PATH= ${pkgs.runtimeShell} -c '[[ -f /usr/bin/sh ]]'",
+        "PATH= /usr/bin/sh --version",
+        "PATH= /usr/bin/env --version",
+        # no stat
+        "! test -e /usr/bin/cp",
+        # also picks up PATH that was set after execve
+        "! /usr/bin/hello",
+        "PATH=${pkgs.hello}/bin /usr/bin/hello",
     )
   '';
 } {
