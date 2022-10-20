@@ -3,6 +3,17 @@
 , makeTest ? pkgs.callPackage (flake.inputs.nixpkgs + "/nixos/tests/make-test-python.nix")
 , cntr ? flake.defaultPackage.${builtins.currentSystem}
 }:
+let
+  pythonShebang = pkgs.writeScript "python-shebang" ''
+    #!/usr/bin/python
+    print("OK")
+  '';
+
+  bashShebang = pkgs.writeScript "bash-shebang" ''
+    #!/usr/bin/bash
+    echo "OK"
+  '';
+in
 makeTest {
   name = "envfs";
   nodes.machine = import ./nixos-example.nix;
@@ -21,6 +32,14 @@ makeTest {
         "! /usr/bin/hello",
         "PATH=${pkgs.hello}/bin /usr/bin/hello",
     )
+
+    out = machine.succeed("PATH=${pkgs.python3}/bin ${pythonShebang}")
+    print(out)
+    assert out == "OK\n"
+
+    out = machine.succeed("PATH=${pkgs.bash}/bin ${bashShebang}")
+    print(out)
+    assert out == "OK\n"
   '';
 } {
   inherit pkgs;
