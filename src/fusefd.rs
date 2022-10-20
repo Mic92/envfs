@@ -16,7 +16,7 @@ pub fn open() -> Result<File> {
             return Ok(file);
         }
 
-        Err(nix::Error::Sys(errno::Errno::ENOENT)) => {}
+        Err(errno::Errno::ENOENT) => {}
         Err(err) => return Err(SimpleError::with("failed to open /dev/fuse", err)),
     };
 
