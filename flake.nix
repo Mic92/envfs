@@ -11,8 +11,11 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in
     {
-      packages.default = pkgs.callPackage ./default.nix {
-        packageSrc = self;
+      packages = {
+        envfs = pkgs.callPackage ./default.nix {
+          packageSrc = self;
+        };
+        default = self.packages.${system}.envfs;
       };
     }) // {
     checks.x86_64-linux.integration-tests =
