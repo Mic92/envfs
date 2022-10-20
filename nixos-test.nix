@@ -37,7 +37,7 @@ makeTest {
     print(out)
     assert out == "OK\n"
 
-    out = machine.succeed("PATH=${pkgs.python3}/bin ${bashShebang}")
+    out = machine.succeed("PATH=${pkgs.bash}/bin ${bashShebang}")
     print(out)
     assert out == "OK\n"
   '';
