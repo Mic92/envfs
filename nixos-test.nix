@@ -9,6 +9,7 @@ makeTest {
 
   testScript = ''
     start_all()
+    machine.wait_until_succeeds("mountpoint -q /usr/bin/")
     machine.succeed(
         "PATH=${pkgs.coreutils}/bin /usr/bin/cp --version",
         # check fallback paths
