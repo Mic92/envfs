@@ -35,6 +35,7 @@ struct Options {
     debug: bool,
     show_help: bool,
     foreground: bool,
+    remount: bool,
     fallback_paths: Vec<PathBuf>,
     args: Vec<String>,
 }
@@ -123,6 +124,9 @@ fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
         match mount_opt[0] {
             // ignore
             "ro" | "rw" => {}
+            "remount" => {
+                opts.remount = true;
+            }
             "debug" => {
                 opts.debug = true;
             }
@@ -147,6 +151,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
         debug: false,
         show_help: false,
         foreground: false,
+        remount: false,
         fallback_paths: vec![],
         args: vec![],
     };
@@ -204,6 +209,10 @@ fn run_app(args: &[String]) -> i32 {
 
     if opts.show_help {
         show_help(app_name);
+        return 0;
+    }
+    if opts.remount {
+        eprintln!("Ignoring remount request.");
         return 0;
     }
     if opts.debug {
