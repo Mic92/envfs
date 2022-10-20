@@ -32,7 +32,7 @@ extern "C" fn handle_sigint(_: i32) {
 
 struct Options {
     mountpoint: PathBuf,
-    verbose: bool,
+    debug: bool,
     show_help: bool,
     foreground: bool,
     fallback_paths: Vec<PathBuf>,
@@ -112,7 +112,7 @@ impl<'a> Drop for MountGuard<'a> {
 fn show_help(prog_name: &str) {
     eprintln!("USAGE: {} [options] mountpoint", prog_name);
     eprintln!("-h, --help             show help");
-    eprintln!("-v, --verbose          verbose logging");
+    eprintln!("-o debug               debug logging");
     eprintln!("-o fallback-path=PATH  Fallback path if PATH is not set");
     eprintln!("                       (can be passed multiple times)");
 }
@@ -123,6 +123,9 @@ fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
         match mount_opt[0] {
             // ignore
             "ro" | "rw" => {}
+            "debug" => {
+                opts.debug = true;
+            }
             "fallback-path" => {
                 if mount_opt.len() != 2 {
                     bail!("fallback-path needs an argument");
@@ -141,7 +144,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut i: usize = 0;
     let mut opts = Options {
         mountpoint: PathBuf::from(""),
-        verbose: false,
+        debug: false,
         show_help: false,
         foreground: false,
         fallback_paths: vec![],
@@ -165,9 +168,6 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     bail!("'-o' requires an argument");
                 }
                 parse_mount_options(&args[i], &mut opts)?;
-            }
-            "-v" | "--verbose" => {
-                opts.verbose = true;
             }
             _ => {
                 if args[i].starts_with('-') && args[i] != "--" {
@@ -206,7 +206,7 @@ fn run_app(args: &[String]) -> i32 {
         show_help(app_name);
         return 0;
     }
-    if opts.verbose {
+    if opts.debug {
         if let Err(err) = enable_debug_log() {
             eprintln!("{}: cannot set up logging: {}", app_name, err);
         }
