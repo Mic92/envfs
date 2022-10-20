@@ -15,6 +15,9 @@
         envfs = pkgs.callPackage ./default.nix {
           packageSrc = self;
         };
+        envfsStatic = pkgs.pkgsStatic.callPackage ./default.nix {
+          packageSrc = self;
+        };
         default = self.packages.${system}.envfs;
       };
     }) // {
