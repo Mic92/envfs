@@ -332,8 +332,14 @@ where
 }
 
 fn get_syscall_args(pid: Pid) -> Result<Vec<c_ulong>> {
-    let path = format!("/proc/{}/syscall", pid.as_raw());
-    let line = try_with!(fs::read_to_string(path), "cannot read syscall file");
+    let line = loop {
+        let path = format!("/proc/{}/syscall", pid.as_raw());
+        let line = try_with!(fs::read_to_string(path), "cannot read syscall file");
+        // Sometimes system calls are still in progress when we are trying to read them.
+        if line != "running\n" {
+            break line;
+        }
+    };
     let res = line
         .trim_end()
         .split(' ')
