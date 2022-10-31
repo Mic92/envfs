@@ -26,6 +26,8 @@ makeTest {
         # check fallback paths
         "PATH= /usr/bin/sh --version",
         "PATH= /usr/bin/env --version",
+        "PATH= test -e /usr/bin/sh",
+        "PATH= test -e /usr/bin/env",
         # no stat
         "! test -e /usr/bin/cp",
         # also picks up PATH that was set after execve
