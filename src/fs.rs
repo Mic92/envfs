@@ -286,13 +286,11 @@ where
         return None;
     }
     // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
-    if args[0] != libc::SYS_open as u64
-        && args[0] != libc::SYS_openat as u64
-        && args[0] != libc::SYS_execve as u64
-        && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"))
-    {
-        return None;
-    }
+    let allowed_syscall = args[0] == libc::SYS_open as u64
+        && args[0] == libc::SYS_openat as u64
+        && args[0] == libc::SYS_execve as u64
+        && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
+
     if args[0] == libc::SYS_execve as u64 {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
         if args.len() < 4 {
@@ -319,10 +317,16 @@ where
             }
         }
     }
-    let path = match env.get(OsStr::new("PATH")) {
-        Some(v) => v,
-        None => OsStr::new(""),
-    };
+    let mut path = OsStr::new("");
+
+    if allowed_syscall {
+        if let Some(v) = env.get(OsStr::new("PATH")) {
+            path = v;
+        };
+    }
+
+    // We return all paths in fallback path to be resolved always independently
+    // of the syscall.
     which(path, &name, fallback_paths)
 }
 
