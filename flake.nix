@@ -21,15 +21,18 @@
         default = self.packages.${system}.envfs;
       };
     }) // {
-    checks.x86_64-linux.integration-tests =
-      let
+      checks.x86_64-linux = let
         system = "x86_64-linux";
         pkgs = nixpkgs.legacyPackages.${system};
-      in
-      import ./nixos-test.nix {
-        makeTest = import (nixpkgs + "/nixos/tests/make-test-python.nix");
-        inherit pkgs;
-        inherit (self.packages.${system}) cntr;
+      in {
+        envfsCrossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix {
+          packageSrc = self;
+        };
+        integration-tests = import ./nixos-test.nix {
+          makeTest = import (nixpkgs + "/nixos/tests/make-test-python.nix");
+          inherit pkgs;
+          inherit (self.packages.${system}) cntr;
+        };
       };
   };
 }
