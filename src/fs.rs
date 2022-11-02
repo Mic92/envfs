@@ -264,6 +264,34 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     Ok(res)
 }
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "arm",
+    target_arch = "powerpc",
+    target_arch = "powerpc64",
+    target_arch = "sparc64",
+    target_arch = "mips",
+    target_arch = "mips64",
+    target_arch = "s390x"
+))]
+fn is_open_syscall(num: usize) -> bool {
+    num == libc::SYS_open as usize && num == libc::SYS_openat as usize
+}
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "arm",
+    target_arch = "powerpc",
+    target_arch = "powerpc64",
+    target_arch = "sparc64",
+    target_arch = "mips",
+    target_arch = "mips64",
+    target_arch = "s390x"
+)))]
+fn is_open_syscall(num: usize) -> bool {
+    num == libc::SYS_openat as usize
+}
+
 fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
@@ -286,12 +314,11 @@ where
         return None;
     }
     // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
-    let allowed_syscall = args[0] == libc::SYS_open as u64
-        && args[0] == libc::SYS_openat as u64
-        && args[0] == libc::SYS_execve as u64
+    let allowed_syscall = is_open_syscall(args[0] as usize)
+        && args[0] == libc::SYS_execve as usize
         && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
-    if args[0] == libc::SYS_execve as u64 {
+    if args[0] == libc::SYS_execve as usize {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
         if args.len() < 4 {
             debug!(
@@ -330,7 +357,7 @@ where
     which(path, &name, fallback_paths)
 }
 
-fn get_syscall_args(pid: Pid) -> Result<Vec<c_ulong>> {
+fn get_syscall_args(pid: Pid) -> Result<Vec<usize>> {
     let line = loop {
         let path = format!("/proc/{}/syscall", pid.as_raw());
         let line = try_with!(fs::read_to_string(path), "cannot read syscall file");
@@ -345,9 +372,9 @@ fn get_syscall_args(pid: Pid) -> Result<Vec<c_ulong>> {
         .enumerate()
         .map(|(i, col)| {
             if i == 0 {
-                col.parse::<c_ulong>()
+                col.parse::<usize>()
             } else {
-                c_ulong::from_str_radix(&col[2..], 16)
+                usize::from_str_radix(&col[2..], 16)
             }
         })
         .collect::<std::result::Result<Vec<_>, _>>();
@@ -358,7 +385,7 @@ fn get_syscall_args(pid: Pid) -> Result<Vec<c_ulong>> {
     ))
 }
 
-fn get_env_from_mem(pid: Pid, envp: c_ulong) -> Result<HashMap<OsString, OsString>> {
+fn get_env_from_mem(pid: Pid, envp: usize) -> Result<HashMap<OsString, OsString>> {
     let path = format!("/proc/{}/mem", pid.as_raw());
     let f = try_with!(File::open(&path), "failed to open {}", path);
     let mut reader = BufReader::new(f);
