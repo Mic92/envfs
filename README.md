@@ -55,7 +55,7 @@ work!
 
 Choose one of the following methods:
 
-### Flakes
+### Flakes (Current recommendation)
 
 If you use nix flakes support:
 
@@ -78,7 +78,7 @@ If you use nix flakes support:
 }
 ```
 
-### [niv](https://github.com/nmattia/niv) (Current recommendation)
+### [niv](https://github.com/nmattia/niv)
   First add it to niv:
   
 ```console
