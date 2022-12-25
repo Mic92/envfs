@@ -12,7 +12,7 @@
         "aarch64-linux"
         "riscv64-linux"
       ];
-      flake.envfs = import ./modules/envfs.nix;
+      flake.nixosModules.envfs = import ./modules/envfs.nix;
       perSystem = { self', pkgs, ... }: {
         packages = {
           envfs = pkgs.callPackage ./default.nix {
