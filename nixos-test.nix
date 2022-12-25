@@ -1,7 +1,6 @@
-{ flake ? builtins.getFlake (toString ./.)
-, pkgs ? flake.inputs.nixpkgs.legacyPackages.${builtins.currentSystem}
-, makeTest ? pkgs.callPackage (flake.inputs.nixpkgs + "/nixos/tests/make-test-python.nix")
-, cntr ? flake.defaultPackage.${builtins.currentSystem}
+{ pkgs
+, makeTest
+, cntr
 }:
 let
   pythonShebang = pkgs.writeScript "python-shebang" ''
