@@ -205,7 +205,7 @@ fn run_app(args: &[String]) -> i32 {
         return 1;
     }
 
-    opts.mountpoint = PathBuf::from(&opts.args[if opts.args.len() == 1 { 0 } else { 1 }]);
+    opts.mountpoint = PathBuf::from(&opts.args[usize::from(opts.args.len() != 1)]);
 
     if opts.show_help {
         show_help(app_name);

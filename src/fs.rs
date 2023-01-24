@@ -143,7 +143,7 @@ impl EnvFs {
         let mut sessions = Vec::new();
 
         // numbers of sessions is optimized for cached read
-        let num_sessions = cmp::max(num_cpus::get() / 2, 1) as usize;
+        let num_sessions = cmp::max(num_cpus::get() / 2, 1);
 
         for _ in 0..num_sessions {
             debug!("spawn worker");
@@ -314,7 +314,7 @@ where
         return None;
     }
     // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
-    let allowed_syscall = is_open_syscall(args[0] as usize)
+    let allowed_syscall = is_open_syscall(args[0])
         && args[0] == libc::SYS_execve as usize
         && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
@@ -414,10 +414,7 @@ fn get_env_from_mem(pid: Pid, envp: usize) -> Result<HashMap<OsString, OsString>
     let mut buf = vec![];
     // dereference strings from envp
     let env_vars = env_pointers.iter().map(|p| {
-        try_with!(
-            reader.seek(SeekFrom::Start(*p as u64)),
-            "failed to seek to string"
-        );
+        try_with!(reader.seek(SeekFrom::Start(*p)), "failed to seek to string");
         try_with!(reader.read_until(b'\0', &mut buf), "failed to read string");
         let pair = buf[..buf.len() - 1]
             .splitn(2, |c| *c == b'=')
@@ -446,7 +443,7 @@ impl Filesystem for EnvFs {
 
         let pid = Pid::from_raw(req.pid() as i32);
 
-        match resolve_target(pid, &name, self.fallback_paths.as_slice()) {
+        match resolve_target(pid, name, self.fallback_paths.as_slice()) {
             Some(path) => {
                 let (next_number, generation) = self.next_inode_number();
 
