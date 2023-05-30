@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> { }, packageSrc ? ./. }:
 pkgs.rustPlatform.buildRustPackage {
   pname = "envfs";
-  version = "0.0.1";
+  version = "1.0.1";
   src = packageSrc;
 
   cargoLock.lockFile = ./Cargo.lock;
