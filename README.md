@@ -55,7 +55,19 @@ work!
 
 Choose one of the following methods:
 
-### Flakes (Current recommendation)
+
+### In NixOS starting with 23.05 (Current recommendation)
+
+
+Since NixOS 23.05 you can enable envfs with a single line:
+
+```nix
+{
+  services.envfs.enable = true;
+}
+```
+
+### Flakes
 
 If you use nix flakes support:
 
