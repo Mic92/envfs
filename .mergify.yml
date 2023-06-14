@@ -1,0 +1,21 @@
+queue_rules:
+  - name: default
+    merge_conditions:
+      - check-success=Evaluate flake.nix
+      - check-success=Linting (fmt + clippy)
+      - check-success=check envfsCrossAarch64 [x86_64-linux]
+      - check-success=check integration-tests [x86_64-linux]
+      - check-success=package default [x86_64-linux]
+      - check-success=package envfs [x86_64-linux]
+      - check-success=package envfsStatic [x86_64-linux]
+defaults:
+  actions:
+    queue:
+      allow_merging_configuration_change: true
+pull_request_rules:
+  - name: merge using the merge queue
+    conditions:
+      - base=main
+      - label~=merge-queue|dependencies
+    actions:
+      queue: {}
