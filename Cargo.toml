@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 log = "0.4.*"
-nix = "0.26.*"
+nix = "0.27.*"
 libc = "0.2.*"
 simple-error = "0.3.*"
 lazy_static = "1.4.*"
