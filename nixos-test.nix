@@ -1,6 +1,5 @@
 { pkgs
 , makeTest
-, cntr
 }:
 let
   pythonShebang = pkgs.writeScript "python-shebang" ''

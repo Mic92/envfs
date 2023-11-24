@@ -16,24 +16,28 @@
         "riscv64-linux"
       ];
       flake.nixosModules.envfs = import ./modules/envfs.nix;
-      perSystem = { config, self', pkgs, ... }: {
+      perSystem = { lib, config, pkgs, ... }: {
         packages = {
           envfs = pkgs.callPackage ./default.nix {
             packageSrc = self;
           };
-          default = self'.packages.envfs;
+          default = config.packages.envfs;
         };
-        checks = {
-          envfsCrossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix {
-            packageSrc = self;
+        checks =
+          let
+            packages = lib.mapAttrs' (n: lib.nameValuePair "package-${n}") config.packages;
+            devShells = lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") config.devShells;
+          in
+          packages // devShells // {
+            envfsCrossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix {
+              packageSrc = self;
+            };
+            integration-tests = import ./nixos-test.nix {
+              makeTest = import (inputs.nixpkgs + "/nixos/tests/make-test-python.nix");
+              inherit pkgs;
+            };
+            clippy = config.packages.envfs.override { enableClippy = true; };
           };
-          integration-tests = import ./nixos-test.nix {
-            makeTest = import (inputs.nixpkgs + "/nixos/tests/make-test-python.nix");
-            inherit pkgs;
-            inherit (self'.packages) cntr;
-          };
-          clippy = config.packages.envfs.override { enableClippy = true; };
-        };
       };
     });
 }
