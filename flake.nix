@@ -38,6 +38,9 @@
             };
             clippy = config.packages.envfs.override { enableClippy = true; };
           };
+        devShells.default = pkgs.mkShell {
+          buildInputs = [ pkgs.cargo pkgs.rustc pkgs.cargo-watch pkgs.clippy ];
+        };
       };
     });
 }

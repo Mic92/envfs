@@ -12,9 +12,7 @@ use crate::logger::enable_debug_log;
 use crate::result::Result;
 
 mod fs;
-mod fusefd;
 mod logger;
-mod num_cpus;
 mod result;
 mod setrlimit;
 
@@ -77,29 +75,18 @@ fn wait_signal(mountpoint: &Path) -> Result<()> {
 }
 
 fn serve_fs(opts: &Options) -> Result<()> {
+    if !opts.foreground {
+        try_with!(unistd::daemon(true, false), "cannot daemonize");
+    }
+
     let fs = try_with!(
         EnvFs::new(opts.fallback_paths.as_slice()),
         "cannot create filesystem"
     );
-    try_with!(fs.mount(&opts.mountpoint), "cannot mount filesystem");
 
-    if !opts.foreground {
-        let res = unsafe { unistd::fork().unwrap() };
+    try_with!(fs.mount(&opts.mountpoint), "cannot start fuse sessions");
 
-        if let unistd::ForkResult::Parent { .. } = res {
-            return Ok(());
-        }
-    }
-
-    let sessions = try_with!(fs.spawn_sessions(), "cannot start fuse sessions");
-
-    if opts.foreground {
-        wait_signal(&opts.mountpoint)?;
-    }
-
-    for session in sessions {
-        let _ = session.join();
-    }
+    wait_signal(&opts.mountpoint)?;
 
     Ok(())
 }
