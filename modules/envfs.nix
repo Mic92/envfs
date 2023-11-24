@@ -20,8 +20,9 @@ let
       options = [ "bind" "nofail" ];
     };
   };
-in {
-  environment.systemPackages = [ (pkgs.callPackage ../. {}) ];
+in
+{
+  environment.systemPackages = [ (pkgs.callPackage ../. { }) ];
   fileSystems = if config.virtualisation ? qemu then lib.mkVMOverride mounts else mounts;
 
   system.activationScripts.usrbinenv = lib.mkForce "";

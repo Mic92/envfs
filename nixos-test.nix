@@ -13,7 +13,8 @@ let
     echo "OK"
   '';
 in
-makeTest {
+makeTest
+{
   name = "envfs";
   nodes.machine = import ./nixos-example.nix;
 
@@ -42,7 +43,8 @@ makeTest {
     print(out)
     assert out == "OK\n"
   '';
-} {
+}
+{
   inherit pkgs;
   inherit (pkgs) system;
 }

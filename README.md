@@ -1,16 +1,18 @@
 # Envfs
 
-A fuse filesystem that dynamically populates contents of /bin and /usr/bin/ so that it contains all executables from the PATH of the requesting process.
-This allows executing FHS based programs on a non-FHS system.
-For example, this is useful to execute shebangs on NixOS that assume hard coded locations like /bin or /usr/bin etc.
+A fuse filesystem that dynamically populates contents of /bin and /usr/bin/ so
+that it contains all executables from the PATH of the requesting process. This
+allows executing FHS based programs on a non-FHS system. For example, this is
+useful to execute shebangs on NixOS that assume hard coded locations like /bin
+or /usr/bin etc.
 
 ## Demo
 
-Mount envfs on /usr/bin
-`sudo envfs /usr/bin`
+Mount envfs on /usr/bin `sudo envfs /usr/bin`
 
 Programs are magically available, based on the PATH of the calling process.
 `$ /usr/bin/env --version`
+
 ```
 env (GNU coreutils) 9.1
 Packaged by https://nixos.org
@@ -27,37 +29,37 @@ Written by Richard Mlynarik, David MacKenzie, and Assaf Gordon.
 If the caller doesn't have the binary in the PATH, it will fail.
 `$ PATH= /usr/bin/env --version 2>&1 || true`
 
-As you can see, /usr/bin is empty.
-`$ ls -la /usr/bin`
+As you can see, /usr/bin is empty. `$ ls -la /usr/bin`
+
 ```
 total 1
 drwxr-xr-x 3345300086 root root 0 Jan  1  1970 .
 drwxr-xr-x          3 root root 3 Sep  5 13:04 ..
 ```
 
-By default, binaries are only available whenever the calling process executes or open
-a program, not when using stat or listing the directory:
+By default, binaries are only available whenever the calling process executes or
+open a program, not when using stat or listing the directory:
 `$ ls -la /usr/bin/env 2>&1 || true`
+
 ```
 ls: cannot access '/usr/bin/env': No such file or directory
 ```
 
 This behaviour can be overridden by setting `ENVFS_RESOLVE_ALWAYS=1`.
 `$ ENVFS_RESOLVE_ALWAYS=1 ls -la /usr/bin/env`
+
 ```
 lr----x--t 1 root root 0 Jan  1  1970 /usr/bin/env -> /nix/store/4vjigg3pr8bns6id4af51mza5p73l9lx-coreutils-9.1/bin/env
 ```
 
-In conclusion, combined with the usual Nix wrappers or nix-shells, it makes things magically
-work!
+In conclusion, combined with the usual Nix wrappers or nix-shells, it makes
+things magically work!
 
 ## Installation in NixOS
 
 Choose one of the following methods:
 
-
 ### In NixOS starting with 23.05 (Current recommendation)
-
 
 Since NixOS 23.05 you can enable envfs with a single line:
 
@@ -71,7 +73,7 @@ Since NixOS 23.05 you can enable envfs with a single line:
 
 If you use nix flakes support:
 
-``` nix
+```nix
 {
   inputs.envfs.url = "github:Mic92/envfs";
   inputs.envfs.inputs.nixpkgs.follows = "nixpkgs";
@@ -91,31 +93,32 @@ If you use nix flakes support:
 ```
 
 ### [niv](https://github.com/nmattia/niv)
-  First add it to niv:
-  
+
+First add it to niv:
+
 ```console
 $ niv add Mic92/envfs
 ```
 
-  Then add the following to your configuration.nix in the `imports` list:
-  
+Then add the following to your configuration.nix in the `imports` list:
+
 ```nix
 {
   imports = [ "${(import ./nix/sources.nix).envfs}/modules/envfs.nix" ];
 }
 ```
-  
+
 ### nix-channel
 
-  As root run:
-  
+As root run:
+
 ```console
 $ nix-channel --add https://github.com/Mic92/envfs/archive/main.tar.gz envfs
 $ nix-channel --update
 ```
-  
-  Then add the following to your configuration.nix in the `imports` list:
-  
+
+Then add the following to your configuration.nix in the `imports` list:
+
 ```nix
 {
   imports = [ <envfs/modules/envfs.nix> ];
@@ -124,16 +127,16 @@ $ nix-channel --update
 
 ### fetchTarball
 
-  Add the following to your configuration.nix:
+Add the following to your configuration.nix:
 
-``` nix
+```nix
 {
   imports = [ "${builtins.fetchTarball "https://github.com/Mic92/envfs/archive/main.tar.gz"}/modules/envfs.nix" ];
 }
 ```
-  
-  or with pinning:
-  
+
+or with pinning:
+
 ```nix
 {
   imports = let
@@ -148,7 +151,6 @@ $ nix-channel --update
   ];
 }
 ```
-  
 
 ## Build and run from source
 

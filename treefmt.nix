@@ -33,6 +33,7 @@
           options = [
             "-eucx"
             ''
+              ${lib.getExe pkgs.rustfmt} "$@"
               cargo clippy --fix
             ''
             "--"
