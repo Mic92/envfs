@@ -8,7 +8,7 @@
       # Used to find the project root
       projectRootFile = "flake.lock";
 
-      programs.deno.enable = !pkgs.stdenv.buildPlatform.isRiscv64;
+      programs.deno.enable = !pkgs.stdenv.buildPlatform.isRiscV64;
       programs.rustfmt.enable = true;
 
       settings.formatter.nix = {
