@@ -11,35 +11,20 @@
       programs.deno.enable = true;
       programs.rustfmt.enable = true;
 
-      settings.formatter = {
-        nix = {
-          command = "sh";
-          options = [
-            "-eucx"
-            ''
-              # First deadnix
-              ${lib.getExe pkgs.deadnix} --edit "$@"
-              # Then nixpkgs-fmt
-              ${lib.getExe pkgs.nixpkgs-fmt} "$@"
-            ''
-            "--"
-          ];
-          includes = [ "*.nix" ];
-          excludes = [ "nix/sources.nix" ];
-        };
-
-        clippy = {
-          command = "sh";
-          options = [
-            "-eucx"
-            ''
-              ${lib.getExe pkgs.rustfmt} "$@"
-              cargo clippy --fix
-            ''
-            "--"
-          ];
-          includes = [ "*.rs" ];
-        };
+      settings.formatter.nix = {
+        command = "sh";
+        options = [
+          "-eucx"
+          ''
+            # First deadnix
+            ${lib.getExe pkgs.deadnix} --edit "$@"
+            # Then nixpkgs-fmt
+            ${lib.getExe pkgs.nixpkgs-fmt} "$@"
+          ''
+          "--"
+        ];
+        includes = [ "*.nix" ];
+        excludes = [ "nix/sources.nix" ];
       };
     };
   };
