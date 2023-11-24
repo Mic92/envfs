@@ -1,8 +1,8 @@
-use cntr_fuse::{
+use concurrent_hashmap::ConcHashMap;
+use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyStatfs,
     ReplyXattr, Request,
 };
-use concurrent_hashmap::ConcHashMap;
 use libc::{c_ulong, ENODATA, ENOENT};
 use log::debug;
 use nix::errno::Errno;
@@ -11,22 +11,17 @@ use simple_error::try_with;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::fs::File;
 use std::io::Seek;
-use std::io::{self, Read, SeekFrom};
 use std::io::{BufRead, BufReader};
+use std::io::{Read, SeekFrom};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::IntoRawFd;
-use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
-use std::{cmp, fs};
 
-use crate::fusefd;
-use crate::num_cpus;
 use crate::result::Result;
 use crate::setrlimit::{setrlimit, Rlimit};
 
@@ -35,7 +30,7 @@ const TTL: Duration = Duration::from_secs(1);
 const ENVFS_MAGIC: u32 = 0xc7653a76;
 
 const ROOT_DIR_ATTR: FileAttr = FileAttr {
-    ino: cntr_fuse::FUSE_ROOT_ID,
+    ino: fuser::FUSE_ROOT_ID,
     size: 0,
     blocks: 0,
     atime: UNIX_EPOCH,
@@ -48,6 +43,7 @@ const ROOT_DIR_ATTR: FileAttr = FileAttr {
     uid: 0,
     gid: 0,
     rdev: 0,
+    blksize: 0,
     // Flags (OS X only, see chflags(2))
     flags: 0,
 };
@@ -69,14 +65,11 @@ pub struct Inode {
 pub struct EnvFs {
     inodes: Arc<ConcHashMap<u64, Arc<Inode>>>,
     inode_counter: Arc<RwLock<InodeCounter>>,
-    fuse_fd: RawFd,
     fallback_paths: Arc<Vec<PathBuf>>,
 }
 
 impl EnvFs {
     pub fn new(fallback_paths: &[PathBuf]) -> Result<EnvFs> {
-        let fuse_fd = try_with!(fusefd::open(), "failed to initialize fuse");
-
         let limit = Rlimit {
             rlim_cur: 1_048_576,
             rlim_max: 1_048_576,
@@ -92,29 +85,8 @@ impl EnvFs {
                 next_number: 3,
                 generation: 0,
             })),
-            fuse_fd: fuse_fd.into_raw_fd(),
             fallback_paths: Arc::new(fallback_paths.to_vec()),
         })
-    }
-
-    pub fn mount(&self, mountpoint: &Path) -> Result<()> {
-        let mount_flags = format!(
-            "fd={},rootmode=40000,user_id=0,group_id=0,allow_other,default_permissions",
-            self.fuse_fd
-        );
-
-        const NONE: Option<&'static [u8]> = None;
-        try_with!(
-            nix::mount::mount(
-                NONE,
-                mountpoint,
-                Some("fuse.envfs"),
-                nix::mount::MsFlags::empty(),
-                Some(mount_flags.as_str()),
-            ),
-            "failed to mount fuse"
-        );
-        Ok(())
     }
 
     fn next_inode_number(&self) -> (u64, u64) {
@@ -123,7 +95,7 @@ impl EnvFs {
         counter.next_number += 1;
 
         if next_number == 0 {
-            counter.next_number = cntr_fuse::FUSE_ROOT_ID + 1;
+            counter.next_number = fuser::FUSE_ROOT_ID + 1;
             counter.generation += 1;
         }
 
@@ -139,41 +111,25 @@ impl EnvFs {
         }
     }
 
-    pub fn spawn_sessions(self) -> Result<Vec<JoinHandle<io::Result<()>>>> {
-        let mut sessions = Vec::new();
-
-        // numbers of sessions is optimized for cached read
-        let num_sessions = cmp::max(num_cpus::get() / 2, 1);
-
-        for _ in 0..num_sessions {
-            debug!("spawn worker");
-
-            let cntrfs = EnvFs {
-                inodes: Arc::clone(&self.inodes),
-                inode_counter: Arc::clone(&self.inode_counter),
-                fuse_fd: self.fuse_fd,
-                fallback_paths: Arc::clone(&self.fallback_paths),
-            };
-
-            let max_background = num_sessions as u16;
-            let res = cntr_fuse::Session::new_from_fd(
+    pub fn mount(self, mountpoint: &Path) -> Result<()> {
+        let cntrfs = EnvFs {
+            inodes: Arc::clone(&self.inodes),
+            inode_counter: Arc::clone(&self.inode_counter),
+            fallback_paths: Arc::clone(&self.fallback_paths),
+        };
+        Ok(try_with!(
+            fuser::mount2(
                 cntrfs,
-                self.fuse_fd,
-                Path::new(""),
-                max_background,
-                max_background,
-            );
-            let session = try_with!(res, "failed to inherit fuse session");
-
-            let guard = thread::spawn(move || {
-                let mut se = session;
-                se.run()
-            });
-
-            sessions.push(guard);
-        }
-
-        Ok(sessions)
+                mountpoint,
+                &[
+                    fuser::MountOption::FSName("envfs".to_string()),
+                    fuser::MountOption::AllowOther,
+                    fuser::MountOption::DefaultPermissions,
+                    fuser::MountOption::RO
+                ]
+            ),
+            "failed to spawn mount2"
+        ))
     }
 }
 
@@ -204,6 +160,7 @@ fn symlink_attr(ino: u64) -> FileAttr {
         kind: FileType::Symlink,
         nlink: 1,
         rdev: 0,
+        blksize: 0,
         // Flags (OS X only, see chflags(2))
         flags: 0,
     }
@@ -436,7 +393,7 @@ fn get_env_from_mem(pid: Pid, envp: usize) -> Result<HashMap<OsString, OsString>
 impl Filesystem for EnvFs {
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         // no subdirectories
-        if parent != cntr_fuse::FUSE_ROOT_ID {
+        if parent != fuser::FUSE_ROOT_ID {
             reply.error(ENOENT);
             return;
         }
@@ -468,7 +425,7 @@ impl Filesystem for EnvFs {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        if ino == cntr_fuse::FUSE_ROOT_ID {
+        if ino == fuser::FUSE_ROOT_ID {
             reply.attr(&TTL, &ROOT_DIR_ATTR);
             return;
         }
@@ -488,7 +445,7 @@ impl Filesystem for EnvFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        if ino != cntr_fuse::FUSE_ROOT_ID {
+        if ino != fuser::FUSE_ROOT_ID {
             reply.error(ENOENT);
             return;
         }
@@ -500,7 +457,9 @@ impl Filesystem for EnvFs {
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // i + 1 means the index of the next entry
-            reply.add(entry.0, (i + 1) as i64, entry.1, entry.2);
+            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+                break;
+            }
         }
         reply.ok();
     }
@@ -524,7 +483,7 @@ impl Filesystem for EnvFs {
         self.inodes.remove(&ino);
     }
 
-    fn destroy(&mut self, _req: &Request) {
+    fn destroy(&mut self) {
         self.inodes.clear();
     }
     fn getxattr(
