@@ -2,7 +2,7 @@
 let
   package = pkgs.rustPlatform.buildRustPackage {
     pname = "envfs";
-    version = "1.0.1";
+    version = "1.0.2";
     src = packageSrc;
 
     cargoLock.lockFile = ./Cargo.lock;
