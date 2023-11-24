@@ -16,12 +16,9 @@
         "riscv64-linux"
       ];
       flake.nixosModules.envfs = import ./modules/envfs.nix;
-      perSystem = { self', pkgs, ... }: {
+      perSystem = { config, self', pkgs, ... }: {
         packages = {
           envfs = pkgs.callPackage ./default.nix {
-            packageSrc = self;
-          };
-          envfsStatic = pkgs.pkgsStatic.callPackage ./default.nix {
             packageSrc = self;
           };
           default = self'.packages.envfs;
@@ -35,6 +32,7 @@
             inherit pkgs;
             inherit (self'.packages) cntr;
           };
+          clippy = config.packages.envfs.override { enableClippy = true; };
         };
       };
     });
