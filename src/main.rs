@@ -110,7 +110,7 @@ fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
         let mount_opt: Vec<&str> = option.splitn(2, '=').collect();
         match mount_opt[0] {
             // ignore
-            "ro" | "rw" => {}
+            "ro" | "rw" | "nofail" => {}
             "remount" => {
                 opts.remount = true;
             }
@@ -124,7 +124,7 @@ fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
                 opts.fallback_paths.push(PathBuf::from(mount_opt[1]));
             }
             _ => {
-                bail!("invalid mount option: {}", mount_opt[0]);
+                eprintln!("ignore invalid mount option: {}", mount_opt[0]);
             }
         }
     }
