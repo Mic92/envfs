@@ -1,6 +1,6 @@
 [package]
 name = "envfs"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["Jörg Thalheim <joerg@thalheim.io>"]
 edition = "2018"
 
