@@ -100,6 +100,7 @@ impl<'a> Drop for MountGuard<'a> {
 fn show_help(prog_name: &str) {
     eprintln!("USAGE: {} [options] mountpoint", prog_name);
     eprintln!("-h, --help             show help");
+    eprintln!("-f, --foreground       do not daemonize");
     eprintln!("-o debug               debug logging");
     eprintln!("-o fallback-path=PATH  Fallback path if PATH is not set");
     eprintln!("                       (can be passed multiple times)");
