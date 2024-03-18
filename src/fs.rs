@@ -232,7 +232,7 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     target_arch = "s390x"
 ))]
 fn is_open_syscall(num: usize) -> bool {
-    num == libc::SYS_open as usize && num == libc::SYS_openat as usize
+    num == libc::SYS_open as usize || num == libc::SYS_openat as usize
 }
 
 #[cfg(not(any(
@@ -270,11 +270,11 @@ where
         debug!("no syscall arguments received from /proc/<pid>/syscall");
         return None;
     }
-    // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
-    let allowed_syscall = is_open_syscall(args[0])
-        && args[0] == libc::SYS_execve as usize
-        && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
+    // We need to allow open/openat because some programs want to open themself, i.e. bash
+    let allowed_syscall =
+        is_open_syscall(args[0]) || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
+    // execve is always allowed and handled differently
     if args[0] == libc::SYS_execve as usize {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
         if args.len() < 4 {
