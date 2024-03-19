@@ -82,9 +82,10 @@ fn serve_fs(opts: &Options) -> Result<()> {
         "cannot create filesystem"
     );
 
-    try_with!(fs.mount(&opts.mountpoints), "cannot start fuse sessions");
+    let session = try_with!(fs.mount(&opts.mountpoints), "cannot start fuse sessions");
 
     wait_signal(&opts.mountpoints)?;
+    drop(session);
 
     Ok(())
 }

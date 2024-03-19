@@ -114,7 +114,7 @@ impl EnvFs {
         }
     }
 
-    pub fn mount(self, mountpoints: &[PathBuf]) -> Result<()> {
+    pub fn mount(self, mountpoints: &[PathBuf]) -> Result<fuser::BackgroundSession> {
         assert!(mountpoints.len() > 1);
 
         let cntrfs = EnvFs {
@@ -124,8 +124,8 @@ impl EnvFs {
             mountpoints: mountpoints.to_vec(),
         };
 
-        try_with!(
-            fuser::mount2(
+        let session = try_with!(
+            fuser::spawn_mount2(
                 cntrfs,
                 mountpoints[0].clone(),
                 &[
@@ -150,7 +150,7 @@ impl EnvFs {
                 "failed to mount envfs"
             );
         }
-        Ok(())
+        Ok(session)
     }
 }
 
