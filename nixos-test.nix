@@ -27,6 +27,9 @@ makeTest
         "PATH= /usr/bin/env --version",
         "PATH= test -e /usr/bin/sh",
         "PATH= test -e /usr/bin/env",
+        # Check bind mount
+        "PATH= /bin/sh --version",
+        "PATH=/usr/bin:/bin /bin/sh --version",
         # no stat
         "! test -e /usr/bin/cp",
         # also picks up PATH that was set after execve

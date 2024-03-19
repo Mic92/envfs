@@ -4,7 +4,7 @@ use nix::sys::signal;
 use nix::{mount, unistd};
 use simple_error::bail;
 use simple_error::try_with;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 
 use crate::fs::EnvFs;
@@ -17,7 +17,7 @@ mod result;
 mod setrlimit;
 
 struct MountGuard<'a> {
-    mount_point: &'a Path,
+    mountpoints: &'a [PathBuf],
 }
 
 lazy_static! {
@@ -29,7 +29,7 @@ extern "C" fn handle_sigint(_: i32) {
 }
 
 struct Options {
-    mountpoint: PathBuf,
+    mountpoints: Vec<PathBuf>,
     debug: bool,
     show_help: bool,
     foreground: bool,
@@ -38,10 +38,8 @@ struct Options {
     args: Vec<String>,
 }
 
-fn wait_signal(mountpoint: &Path) -> Result<()> {
-    let guard = MountGuard {
-        mount_point: mountpoint,
-    };
+fn wait_signal(mountpoints: &[PathBuf]) -> Result<()> {
+    let guard = MountGuard { mountpoints };
 
     let sig_action = signal::SigAction::new(
         signal::SigHandler::Handler(handle_sigint),
@@ -84,16 +82,18 @@ fn serve_fs(opts: &Options) -> Result<()> {
         "cannot create filesystem"
     );
 
-    try_with!(fs.mount(&opts.mountpoint), "cannot start fuse sessions");
+    try_with!(fs.mount(&opts.mountpoints), "cannot start fuse sessions");
 
-    wait_signal(&opts.mountpoint)?;
+    wait_signal(&opts.mountpoints)?;
 
     Ok(())
 }
 
 impl<'a> Drop for MountGuard<'a> {
     fn drop(&mut self) {
-        let _ = mount::umount(self.mount_point);
+        for mountpoint in self.mountpoints {
+            let _ = mount::umount(mountpoint);
+        }
     }
 }
 
@@ -103,6 +103,8 @@ fn show_help(prog_name: &str) {
     eprintln!("-f, --foreground       do not daemonize");
     eprintln!("-o debug               debug logging");
     eprintln!("-o fallback-path=PATH  Fallback path if PATH is not set");
+    eprintln!("                       (can be passed multiple times)");
+    eprintln!("-o bind-mount=PATH     Bind mount PATH with envfs");
     eprintln!("                       (can be passed multiple times)");
 }
 
@@ -117,6 +119,12 @@ fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
             }
             "debug" => {
                 opts.debug = true;
+            }
+            "bind-mount" => {
+                if mount_opt.len() != 2 {
+                    bail!("bind-mount needs an argument");
+                }
+                opts.mountpoints.push(PathBuf::from(mount_opt[1]));
             }
             "fallback-path" => {
                 if mount_opt.len() != 2 {
@@ -135,7 +143,7 @@ fn parse_mount_options(mount_options: &str, opts: &mut Options) -> Result<()> {
 fn parse_options(args: &[String]) -> Result<Options> {
     let mut i: usize = 0;
     let mut opts = Options {
-        mountpoint: PathBuf::from(""),
+        mountpoints: vec![],
         debug: false,
         show_help: false,
         foreground: false,
@@ -192,8 +200,10 @@ fn run_app(args: &[String]) -> i32 {
         show_help(app_name);
         return 1;
     }
-
-    opts.mountpoint = PathBuf::from(&opts.args[usize::from(opts.args.len() != 1)]);
+    opts.mountpoints.insert(
+        0,
+        PathBuf::from(&opts.args[usize::from(opts.args.len() != 1)]),
+    );
 
     if opts.show_help {
         show_help(app_name);

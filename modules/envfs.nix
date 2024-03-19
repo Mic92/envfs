@@ -6,6 +6,7 @@ let
       device = "none";
       fsType = "envfs";
       options = [
+        "bind-mount=/bin"
         "fallback-path=${pkgs.runCommand "fallback-path" {} ''
           mkdir -p $out
           ln -s ${config.environment.usrbinenv} $out/env
@@ -13,11 +14,6 @@ let
         ''}"
         "nofail"
       ];
-    };
-    "/bin" = {
-      device = "/usr/bin";
-      fsType = "none";
-      options = [ "bind" "nofail" ];
     };
   };
 in

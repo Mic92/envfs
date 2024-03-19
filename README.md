@@ -156,6 +156,5 @@ or with pinning:
 
 ```console
 $ nix-build
-$ sudo ./result/bin/envfs /usr/bin
-$ mount --bind /usr/bin /bin
+$ sudo ./result/bin/envfs -o bind-mount=/bin /usr/bin
 ```
