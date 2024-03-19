@@ -74,7 +74,7 @@ fn wait_signal(mountpoints: &[PathBuf]) -> Result<()> {
 
 fn serve_fs(opts: &Options) -> Result<()> {
     if !opts.foreground {
-        try_with!(unistd::daemon(true, false), "cannot daemonize");
+        try_with!(unistd::daemon(true, true), "cannot daemonize");
     }
 
     let fs = try_with!(
