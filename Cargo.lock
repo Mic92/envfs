@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "envfs"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "concurrent-hashmap",
  "fuser",
