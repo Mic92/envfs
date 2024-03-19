@@ -249,6 +249,10 @@ fn is_open_syscall(num: usize) -> bool {
     num == libc::SYS_openat as usize
 }
 
+fn is_execve_syscall(num: usize) -> bool {
+    num == libc::SYS_execve as usize || num == libc::SYS_execveat as usize
+}
+
 fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
@@ -270,12 +274,9 @@ where
         debug!("no syscall arguments received from /proc/<pid>/syscall");
         return None;
     }
-    // We need to allow open/openat because some programs want to open themself, i.e. bash
-    let allowed_syscall =
-        is_open_syscall(args[0]) || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     // execve is always allowed and handled differently
-    if args[0] == libc::SYS_execve as usize {
+    if is_execve_syscall(args[0]) {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
         if args.len() < 4 {
             debug!(
@@ -284,7 +285,7 @@ where
             );
             return None;
         }
-        let envp = args[3];
+        let envp = if args[0] == libc::SYS_execve as usize { args[3] } else { args[4] };
         match get_env_from_mem(pid, envp) {
             Ok(env) => {
                 if let Some(path) = env.get(OsStr::new("PATH")) {
@@ -302,6 +303,10 @@ where
         }
     }
     let mut path = OsStr::new("");
+
+    // We need to allow open/openat because some programs want to open themself, i.e. bash
+    let allowed_syscall =
+        is_open_syscall(args[0]) || is_execve_syscall(args[0]) || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     if allowed_syscall {
         if let Some(v) = env.get(OsStr::new("PATH")) {
