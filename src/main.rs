@@ -188,7 +188,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
 
 fn run_app(args: &[String]) -> i32 {
     let default_name = String::from("envfs");
-    let app_name = args.get(0).unwrap_or(&default_name);
+    let app_name = args.first().unwrap_or(&default_name);
     let mut opts = match parse_options(&args[1..]) {
         Ok(opts) => opts,
         Err(err) => {
