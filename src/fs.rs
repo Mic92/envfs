@@ -140,6 +140,11 @@ impl EnvFs {
 
         for mountpoint in mountpoints.iter().skip(1) {
             try_with!(
+                fs::create_dir_all(mountpoint),
+                "failed to create directory {}",
+                mountpoint.display()
+            );
+            try_with!(
                 mount(
                     Some(&mountpoints[0]),
                     mountpoint,
@@ -147,7 +152,8 @@ impl EnvFs {
                     nix::mount::MsFlags::MS_BIND,
                     None::<&str>
                 ),
-                "failed to mount envfs"
+                "failed to bind mount {}",
+                mountpoint.display()
             );
         }
         Ok(session)
