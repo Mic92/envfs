@@ -1,4 +1,3 @@
-{ ... }:
 {
   imports = [ ./modules/envfs.nix ];
 }

@@ -6,6 +6,7 @@ use fuser::{
 use libc::{c_ulong, ENODATA, ENOENT};
 use log::debug;
 use nix::errno::Errno;
+use nix::mount::mount;
 use nix::unistd::{self, Pid};
 use simple_error::try_with;
 use std::collections::HashMap;
@@ -66,6 +67,7 @@ pub struct EnvFs {
     inodes: Arc<ConcHashMap<u64, Arc<Inode>>>,
     inode_counter: Arc<RwLock<InodeCounter>>,
     fallback_paths: Arc<Vec<PathBuf>>,
+    mountpoints: Vec<PathBuf>,
 }
 
 impl EnvFs {
@@ -86,6 +88,7 @@ impl EnvFs {
                 generation: 0,
             })),
             fallback_paths: Arc::new(fallback_paths.to_vec()),
+            mountpoints: vec![],
         })
     }
 
@@ -111,16 +114,20 @@ impl EnvFs {
         }
     }
 
-    pub fn mount(self, mountpoint: &Path) -> Result<()> {
+    pub fn mount(self, mountpoints: &[PathBuf]) -> Result<fuser::BackgroundSession> {
+        assert!(mountpoints.len() > 1);
+
         let cntrfs = EnvFs {
             inodes: Arc::clone(&self.inodes),
             inode_counter: Arc::clone(&self.inode_counter),
             fallback_paths: Arc::clone(&self.fallback_paths),
+            mountpoints: mountpoints.to_vec(),
         };
-        Ok(try_with!(
-            fuser::mount2(
+
+        let session = try_with!(
+            fuser::spawn_mount2(
                 cntrfs,
-                mountpoint,
+                mountpoints[0].clone(),
                 &[
                     fuser::MountOption::FSName("envfs".to_string()),
                     fuser::MountOption::AllowOther,
@@ -129,7 +136,27 @@ impl EnvFs {
                 ]
             ),
             "failed to spawn mount2"
-        ))
+        );
+
+        for mountpoint in mountpoints.iter().skip(1) {
+            try_with!(
+                fs::create_dir_all(mountpoint),
+                "failed to create directory {}",
+                mountpoint.display()
+            );
+            try_with!(
+                mount(
+                    Some(&mountpoints[0]),
+                    mountpoint,
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>
+                ),
+                "failed to bind mount {}",
+                mountpoint.display()
+            );
+        }
+        Ok(session)
     }
 }
 
@@ -166,16 +193,20 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
-fn _which<P>(path: &Path, exe_name: P) -> Option<PathBuf>
+fn _which<P1, P2>(path: &Path, exe_name: P1, mountpoints: &[P2]) -> Option<PathBuf>
 where
-    P: AsRef<Path>,
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
 {
-    let skip_path = match path.symlink_metadata() {
-        Ok(stat) => stat.nlink() as u32 == ENVFS_MAGIC,
-        Err(_) => true,
-    };
-    if skip_path {
+    if mountpoints.iter().any(|m| m.as_ref().starts_with(path)) {
         return None;
+    }
+
+    // Do we still need this check if we already check for mountpoints?
+    if let Ok(stat) = path.symlink_metadata() {
+        if stat.nlink() as u32 == ENVFS_MAGIC {
+            return None;
+        }
     }
 
     let full_path = path.join(&exe_name);
@@ -187,13 +218,23 @@ where
     }
 }
 
-fn which<P>(path_env: &OsStr, exe_name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
+fn which<P1, P2>(
+    path_env: &OsStr,
+    exe_name: P1,
+    fallback_paths: &[PathBuf],
+    mountpoints: &[P2],
+) -> Option<PathBuf>
 where
-    P: AsRef<Path>,
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
 {
-    let exe = env::split_paths(&path_env).find_map(|dir| _which(&dir, &exe_name));
+    let exe = env::split_paths(&path_env).find_map(|dir| _which(&dir, &exe_name, mountpoints));
 
-    exe.or_else(|| fallback_paths.iter().find_map(|dir| _which(dir, &exe_name)))
+    exe.or_else(|| {
+        fallback_paths
+            .iter()
+            .find_map(|dir| _which(dir, &exe_name, mountpoints))
+    })
 }
 
 fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
@@ -232,7 +273,7 @@ fn read_environment(pid: unistd::Pid) -> Result<HashMap<OsString, OsString>> {
     target_arch = "s390x"
 ))]
 fn is_open_syscall(num: usize) -> bool {
-    num == libc::SYS_open as usize && num == libc::SYS_openat as usize
+    num == libc::SYS_open as usize || num == libc::SYS_openat as usize
 }
 
 #[cfg(not(any(
@@ -249,9 +290,19 @@ fn is_open_syscall(num: usize) -> bool {
     num == libc::SYS_openat as usize
 }
 
-fn resolve_target<P>(pid: Pid, name: P, fallback_paths: &[PathBuf]) -> Option<PathBuf>
+fn is_execve_syscall(num: usize) -> bool {
+    num == libc::SYS_execve as usize || num == libc::SYS_execveat as usize
+}
+
+fn resolve_target<P1, P2>(
+    pid: Pid,
+    name: P1,
+    fallback_paths: &[PathBuf],
+    mountpoints: &[P2],
+) -> Option<PathBuf>
 where
-    P: AsRef<Path>,
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
 {
     let env = match read_environment(pid) {
         Ok(env) => env,
@@ -270,12 +321,9 @@ where
         debug!("no syscall arguments received from /proc/<pid>/syscall");
         return None;
     }
-    // FIXME: We need to allow open/openat because some programs want to open themself, i.e. bash
-    let allowed_syscall = is_open_syscall(args[0])
-        && args[0] == libc::SYS_execve as usize
-        && !env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
-    if args[0] == libc::SYS_execve as usize {
+    // execve is always allowed and handled differently
+    if is_execve_syscall(args[0]) {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
         if args.len() < 4 {
             debug!(
@@ -284,11 +332,15 @@ where
             );
             return None;
         }
-        let envp = args[3];
+        let envp = if args[0] == libc::SYS_execve as usize {
+            args[3]
+        } else {
+            args[4]
+        };
         match get_env_from_mem(pid, envp) {
             Ok(env) => {
                 if let Some(path) = env.get(OsStr::new("PATH")) {
-                    if let Some(exe) = which(path, &name, &[]) {
+                    if let Some(exe) = which(path, &name, &[], mountpoints) {
                         return Some(exe);
                     }
                 }
@@ -298,10 +350,16 @@ where
                     "Could not read environment variables from child from memory: {}",
                     e
                 )
+                // fallback to the default path
             }
         }
     }
     let mut path = OsStr::new("");
+
+    // We need to allow open/openat because some programs want to open themself, i.e. bash
+    let allowed_syscall = is_open_syscall(args[0])
+        || is_execve_syscall(args[0])
+        || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     if allowed_syscall {
         if let Some(v) = env.get(OsStr::new("PATH")) {
@@ -311,7 +369,7 @@ where
 
     // We return all paths in fallback path to be resolved always independently
     // of the syscall.
-    which(path, &name, fallback_paths)
+    which(path, &name, fallback_paths, mountpoints)
 }
 
 fn get_syscall_args(pid: Pid) -> Result<Vec<usize>> {
@@ -400,7 +458,7 @@ impl Filesystem for EnvFs {
 
         let pid = Pid::from_raw(req.pid() as i32);
 
-        match resolve_target(pid, name, self.fallback_paths.as_slice()) {
+        match resolve_target(pid, name, self.fallback_paths.as_slice(), &self.mountpoints) {
             Some(path) => {
                 let (next_number, generation) = self.next_inode_number();
 
@@ -502,7 +560,7 @@ impl Filesystem for EnvFs {
         let pid = Pid::from_raw(req.pid() as i32);
         if inode.pid != pid {
             // unlikely
-            match resolve_target(pid, &inode.name, &self.fallback_paths) {
+            match resolve_target(pid, &inode.name, &self.fallback_paths, &self.mountpoints) {
                 Some(target) => {
                     reply.data(target.as_os_str().as_bytes());
                     return;
