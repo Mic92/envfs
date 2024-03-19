@@ -198,7 +198,7 @@ where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    if mountpoints.iter().any(|m| m.as_ref().starts_with(path)) {
+    if mountpoints.iter().any(|m| path.starts_with(m)) {
         return None;
     }
 
