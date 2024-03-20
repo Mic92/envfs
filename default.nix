@@ -2,7 +2,7 @@
 let
   package = pkgs.rustPlatform.buildRustPackage {
     pname = "envfs";
-    version = "1.0.2";
+    version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
     src = packageSrc;
 
     cargoLock.lockFile = ./Cargo.lock;
