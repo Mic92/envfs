@@ -18,6 +18,7 @@ let
   };
 in
 {
+  services.envfs.enable = false;
   environment.systemPackages = [ (pkgs.callPackage ../. { }) ];
   fileSystems = if config.virtualisation ? qemu then lib.mkVMOverride mounts else mounts;
 
