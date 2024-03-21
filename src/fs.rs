@@ -4,13 +4,15 @@ use fuser::{
     ReplyXattr, Request,
 };
 use libc::{c_ulong, ENODATA, ENOENT};
-use log::debug;
+use libc::{endmntent, getmntent, setmntent, FILE};
+use log::{debug, warn};
 use nix::errno::Errno;
 use nix::mount::mount;
 use nix::unistd::{self, Pid};
 use simple_error::try_with;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::{CStr, CString};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::fs::File;
@@ -20,6 +22,7 @@ use std::io::{Read, SeekFrom};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::ptr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -29,6 +32,8 @@ use crate::setrlimit::{setrlimit, Rlimit};
 const TTL: Duration = Duration::from_secs(1);
 
 const ENVFS_MAGIC: u32 = 0xc7653a76;
+const ENVFS_NAME: &str = "envfs";
+const ENVFS_NAME_C: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"envfs\0") };
 
 const ROOT_DIR_ATTR: FileAttr = FileAttr {
     ino: fuser::FUSE_ROOT_ID,
@@ -68,6 +73,48 @@ pub struct EnvFs {
     inode_counter: Arc<RwLock<InodeCounter>>,
     fallback_paths: Arc<Vec<PathBuf>>,
     mountpoints: Vec<PathBuf>,
+}
+
+fn open_mntent(path: &str) -> Result<*mut FILE> {
+    let mtab_path = CString::new(path).expect("CString::new failed");
+    let mtab_ptr = mtab_path.as_ptr();
+
+    let mtab_file: *mut FILE = unsafe { setmntent(mtab_ptr, b"r\0".as_ptr() as *const i8) };
+    if mtab_file.is_null() {
+        return Err("Failed to open mtab".into());
+    }
+    Ok(mtab_file)
+}
+
+fn is_envfs_mountpoint(path: &Path) -> Result<bool> {
+    let c_path = try_with!(CString::new(path.as_os_str().as_bytes()), "Failed to convert path to CString");
+    let mtab_file = match open_mntent("/etc/mtab") {
+        Ok(mtab_file) => mtab_file,
+        Err(_) => match open_mntent("/proc/mounts") {
+            Ok(mtab_file) => mtab_file,
+            Err(_) => return Err("Failed to open mtab".into()),
+        }
+    };
+
+    let mut mnt: *mut libc::mntent = ptr::null_mut();
+    let mut result = false;
+
+    unsafe {
+        while !mnt.is_null() {
+            mnt = getmntent(mtab_file);
+            if !mnt.is_null() {
+                let mnt_dir = CStr::from_ptr((*mnt).mnt_dir);
+                let fs_name = CStr::from_ptr((*mnt).mnt_fsname);
+                if mnt_dir == c_path.as_c_str() && fs_name == ENVFS_NAME_C {
+                    result = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    unsafe { endmntent(mtab_file) };
+    Ok(result)
 }
 
 impl EnvFs {
@@ -129,7 +176,7 @@ impl EnvFs {
                 cntrfs,
                 mountpoints[0].clone(),
                 &[
-                    fuser::MountOption::FSName("envfs".to_string()),
+                    fuser::MountOption::FSName(ENVFS_NAME.to_string()),
                     fuser::MountOption::AllowOther,
                     fuser::MountOption::DefaultPermissions,
                     fuser::MountOption::RO
@@ -144,6 +191,17 @@ impl EnvFs {
                 "failed to create directory {}",
                 mountpoint.display()
             );
+            match is_envfs_mountpoint(mountpoint) {
+                Ok(true) => {
+                    debug!("{} is already a mountpoint", mountpoint.display());
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("failed to check if {} is a mountpoint: {}", mountpoint.display(), e);
+                    continue;
+                }
+            }
             try_with!(
                 mount(
                     Some(&mountpoints[0]),
