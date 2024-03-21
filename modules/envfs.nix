@@ -15,6 +15,13 @@ let
         "nofail"
       ];
     };
+    # We need to bind-mount /bin to /usr/bin, because otherwise upgrading
+    # from envfs < 1.0.5 will cause having the old envs with no /bin bind mount.
+    # Systemd is smart enough to not mount /bin if it's already mounted.
+    "/bin" = {
+      device = "/usr/bin";
+      options = [ "bind" "nofail" ];
+    };
   };
 in
 {
