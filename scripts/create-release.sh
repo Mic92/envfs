@@ -32,7 +32,6 @@ if [[ "$unpushed_commits" != "" ]]; then
   exit 1
 fi
 sed -i -e "s!^version = \".*\"\$!version = \"${version}\"!" Cargo.toml
-git add
 cargo build
 git add Cargo.lock Cargo.toml
 git commit -m "bump version ${version}"
