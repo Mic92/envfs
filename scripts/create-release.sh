@@ -11,8 +11,8 @@ if [[ -z "$version" ]]; then
   exit 1
 fi
 
-if [[ "$(git symbolic-ref --short HEAD)" != "master" ]]; then
-  echo "must be on master branch" >&2
+if [[ "$(git symbolic-ref --short HEAD)" != "main" ]]; then
+  echo "must be on main branch" >&2
   exit 1
 fi
 
