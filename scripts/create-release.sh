@@ -37,4 +37,4 @@ git add Cargo.lock Cargo.toml
 git commit -m "bump version ${version}"
 git tag -e "${version}"
 
-echo "now run 'git push --tags origin $branch'"
+echo "now run 'git push origin $version'"
