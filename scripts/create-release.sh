@@ -31,7 +31,7 @@ if [[ "$unpushed_commits" != "" ]]; then
   echo -e "\nThere are unpushed changes, exiting:\n$unpushed_commits" >&2
   exit 1
 fi
-sed -i -e "s!^version = \".*\"\$!version = \"${version}\"!" Cargo.toml
+cargo set-version "$version"
 cargo build
 git add Cargo.lock Cargo.toml
 git commit -m "bump version ${version}"

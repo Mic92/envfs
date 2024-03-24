@@ -39,7 +39,13 @@
             clippy = config.packages.envfs.override { enableClippy = true; };
           };
         devShells.default = pkgs.mkShell {
-          buildInputs = [ pkgs.cargo pkgs.rustc pkgs.cargo-watch pkgs.clippy ];
+          buildInputs = [
+            pkgs.rustc
+            pkgs.cargo
+            pkgs.cargo-watch
+            pkgs.cargo-edit
+            pkgs.clippy
+          ];
         };
       };
     });
