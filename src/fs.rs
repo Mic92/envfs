@@ -403,12 +403,10 @@ where
         } else {
             args[4]
         };
-        match get_env_from_mem(pid, envp) {
-            Ok(env) => {
-                if let Some(path) = env.get(OsStr::new("PATH")) {
-                    if let Some(exe) = which(path, &name, &[], mountpoints) {
-                        return Some(exe);
-                    }
+        match get_path_from_mem(pid, envp) {
+            Ok(path) => {
+                if let Some(exe) = which(&path, &name, &[], mountpoints) {
+                    return Some(exe);
                 }
             }
             Err(e) => {
@@ -466,7 +464,7 @@ fn get_syscall_args(pid: Pid) -> Result<Vec<usize>> {
     ))
 }
 
-fn get_env_from_mem(pid: Pid, envp: usize) -> Result<HashMap<OsString, OsString>> {
+fn get_path_from_mem(pid: Pid, envp: usize) -> Result<OsString> {
     let path = format!("/proc/{}/mem", pid.as_raw());
     let f = try_with!(File::open(&path), "failed to open {}", path);
     let mut reader = BufReader::new(f);
@@ -494,24 +492,17 @@ fn get_env_from_mem(pid: Pid, envp: usize) -> Result<HashMap<OsString, OsString>
 
     let mut buf = vec![];
     // dereference strings from envp
-    let env_vars = env_pointers.iter().map(|p| {
+    for p in env_pointers.iter() {
         try_with!(reader.seek(SeekFrom::Start(*p)), "failed to seek to string");
         try_with!(reader.read_until(b'\0', &mut buf), "failed to read string");
-        let pair = buf[..buf.len() - 1]
-            .splitn(2, |c| *c == b'=')
-            .collect::<Vec<_>>();
-        let pair = if pair.len() != 2 {
-            (OsString::from_vec(pair[0].to_vec()), OsString::new())
-        } else {
-            (
-                OsString::from_vec(pair[0].to_vec()),
-                OsString::from_vec(pair[1].to_vec()),
-            )
-        };
+        for var in buf.split(|c| *c == b'\0') {
+            if var.starts_with(b"PATH=") {
+                return Ok(OsString::from_vec(var[5..].to_vec()));
+            }
+        }
         buf.clear();
-        Ok(pair)
-    });
-    env_vars.collect::<Result<HashMap<_, _>>>()
+    }
+    Ok(OsString::new())
 }
 
 impl Filesystem for EnvFs {
