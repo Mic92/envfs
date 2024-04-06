@@ -3,8 +3,8 @@ use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyStatfs,
     ReplyXattr, Request,
 };
-use libc::{c_ulong, ENODATA, ENOENT};
 use libc::{endmntent, getmntent, setmntent, FILE};
+use libc::{ENODATA, ENOENT};
 use log::{debug, warn};
 use nix::errno::Errno;
 use nix::mount::mount;
@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io::Seek;
 use std::io::{BufRead, BufReader};
 use std::io::{Read, SeekFrom};
+use std::mem::size_of;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -475,14 +476,14 @@ fn get_path_from_mem(pid: Pid, envp: usize) -> Result<OsString> {
     );
     let mut pointer_buf = [0; 8];
 
-    // read content of envp
-    let mut env_pointers: Vec<c_ulong> = vec![];
+    // read pointers of envp and dereference it
+    let mut env_pointers: Vec<usize> = vec![];
     loop {
         let num = try_with!(reader.read(&mut pointer_buf), "error reading memory");
-        if num < 4 {
+        if num < size_of::<usize>() {
             break;
         }
-        let p = c_ulong::from_ne_bytes(pointer_buf);
+        let p = usize::from_ne_bytes(pointer_buf);
         // envp is terminated by a NULL pointer
         if p == 0 {
             break;
@@ -490,10 +491,14 @@ fn get_path_from_mem(pid: Pid, envp: usize) -> Result<OsString> {
         env_pointers.push(p);
     }
 
-    let mut buf = vec![];
     // dereference strings from envp
+    let mut buf = vec![];
+    assert!(size_of::<usize>() <= size_of::<u64>());
     for p in env_pointers.iter() {
-        try_with!(reader.seek(SeekFrom::Start(*p)), "failed to seek to string");
+        try_with!(
+            reader.seek(SeekFrom::Start(*p as u64)),
+            "failed to seek to string"
+        );
         try_with!(reader.read_until(b'\0', &mut buf), "failed to read string");
         for var in buf.split(|c| *c == b'\0') {
             if var.starts_with(b"PATH=") {
