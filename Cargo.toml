@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 log = "0.4.*"
-nix = { version = "0.28.*", features = ["mount", "process", "fs", "signal"] }
+nix = { version = "0.29.*", features = ["mount", "process", "fs", "signal"] }
 libc = "0.2.*"
 simple-error = "0.3.*"
 lazy_static = "1.4.*"
