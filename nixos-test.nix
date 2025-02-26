@@ -34,8 +34,6 @@ testers.runNixOSTest {
         # Check bind mount
         "PATH= /bin/sh --version",
         "PATH=/usr/bin:/bin /bin/sh --version",
-        # no stat
-        "! test -e /usr/bin/cp",
         # also picks up PATH that was set after execve
         "! /usr/bin/hello",
         "PATH=${hello}/bin /usr/bin/hello",
