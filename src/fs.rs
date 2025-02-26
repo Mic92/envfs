@@ -362,7 +362,12 @@ fn is_execve_syscall(num: usize) -> bool {
 }
 
 fn is_access_syscall(num: usize) -> bool {
-    num == libc::SYS_access as usize || num == libc::SYS_newfstatat as usize
+    num == libc::SYS_access as usize
+}
+
+// TODO: Currently only supports arch which has the newfstatat system call
+fn is_fstatat_syscall(num: usize) -> bool {
+    num == libc::SYS_newfstatat as usize
 }
 
 fn resolve_target<P1, P2>(
@@ -429,6 +434,7 @@ where
     let allowed_syscall = is_open_syscall(args[0])
         || is_execve_syscall(args[0])
         || is_access_syscall(args[0])
+        || is_fstatat_syscall(args[0])
         || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     if allowed_syscall {
