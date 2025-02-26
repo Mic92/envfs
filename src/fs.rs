@@ -359,6 +359,23 @@ fn is_execve_syscall(num: usize) -> bool {
     num == libc::SYS_execve as usize || num == libc::SYS_execveat as usize
 }
 
+#[cfg(not(any(target_arch = "arm")))]
+fn is_access_syscall(num: usize) -> bool {
+    num == libc::SYS_access as usize
+        || num == libc::SYS_faccessat as usize
+        || num == libc::SYS_faccessat2 as usize
+}
+
+#[cfg(any(target_arch = "arm"))]
+fn is_access_syscall(num: usize) -> bool {
+    num == libc::SYS_faccessat as usize || num == libc::SYS_faccessat2 as usize
+}
+
+// TODO: Currently only supports arch which has the newfstatat system call
+fn is_fstatat_syscall(num: usize) -> bool {
+    num == libc::SYS_newfstatat as usize
+}
+
 fn resolve_target<P1, P2>(
     pid: Pid,
     name: P1,
@@ -422,6 +439,8 @@ where
     // We need to allow open/openat because some programs want to open themself, i.e. bash
     let allowed_syscall = is_open_syscall(args[0])
         || is_execve_syscall(args[0])
+        || is_access_syscall(args[0])
+        || is_fstatat_syscall(args[0])
         || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     if allowed_syscall {
