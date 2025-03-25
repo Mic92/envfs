@@ -90,7 +90,7 @@ fn serve_fs(opts: &Options) -> Result<()> {
     Ok(())
 }
 
-impl<'a> Drop for MountGuard<'a> {
+impl Drop for MountGuard<'_> {
     fn drop(&mut self) {
         for mountpoint in self.mountpoints {
             let _ = mount::umount(mountpoint);
