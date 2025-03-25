@@ -1,7 +1,8 @@
 {
   description = "Fuse filesystem that returns symlinks to executables based on the PATH of the requesting process.";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs.nixpkgs.url = "git+https://github.com/NixOS/nixpkgs?shallow=1&ref=nixpkgs-unstable";
+
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
   inputs.flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
   inputs.treefmt-nix.url = "github:numtide/treefmt-nix";
@@ -14,6 +15,7 @@
         "x86_64-linux"
         "aarch64-linux"
         "riscv64-linux"
+        "aarch64-darwin"
       ];
       flake.nixosModules.envfs = import ./modules/envfs.nix;
       perSystem = { lib, config, pkgs, ... }: {
