@@ -540,7 +540,7 @@ impl Filesystem for EnvFs {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         if ino == fuser::FUSE_ROOT_ID {
             reply.attr(&TTL, &ROOT_DIR_ATTR);
             return;
