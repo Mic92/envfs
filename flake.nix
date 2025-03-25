@@ -19,7 +19,7 @@
       ];
       flake.nixosModules.envfs = import ./modules/envfs.nix;
       perSystem = { lib, config, pkgs, ... }: {
-        packages = {
+        packages = lib.optionalAttrs pkgs.stdenv.isLinux {
           envfs = pkgs.callPackage ./default.nix {
             packageSrc = self;
           };
@@ -30,7 +30,7 @@
             packages = lib.mapAttrs' (n: lib.nameValuePair "package-${n}") config.packages;
             devShells = lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") config.devShells;
           in
-          packages // devShells // {
+          packages // devShells // lib.optionalAttrs pkgs.stdenv.isLinux {
             envfsCrossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix {
               packageSrc = self;
             };
