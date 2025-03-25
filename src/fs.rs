@@ -64,8 +64,6 @@ pub struct Inode {
     pub name: PathBuf,
     pub path: PathBuf,
     pub pid: Pid,
-    pub kind: FileType,
-    pub ino: u64,
     pub nlookup: RwLock<u64>,
 }
 
@@ -530,8 +528,6 @@ impl Filesystem for EnvFs {
                     name: PathBuf::from(name),
                     path,
                     pid,
-                    kind: attr.kind,
-                    ino: attr.ino,
                     nlookup: RwLock::new(1),
                 });
                 assert!(self.inodes.insert(next_number, inode).is_none());
