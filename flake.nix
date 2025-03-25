@@ -35,8 +35,10 @@
               packageSrc = self;
             };
 
-            integration-tests = pkgs.callPackage ./nixos-test.nix { };
             clippy = config.packages.envfs.override { enableClippy = true; };
+            # disable riscv64 for now until https://github.com/NixOS/nixpkgs/pull/393093 is merged
+          } // lib.optionalAttrs (pkgs.stdenv.isLinux && !pkgs.stdenv.hostPlatform.isRiscV) {
+            integration-tests = pkgs.callPackage ./nixos-test.nix { };
           };
         devShells.default = pkgs.mkShell {
           buildInputs = [
