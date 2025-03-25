@@ -34,10 +34,8 @@
             envfsCrossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix {
               packageSrc = self;
             };
-            integration-tests = import ./nixos-test.nix {
-              makeTest = import (inputs.nixpkgs + "/nixos/tests/make-test-python.nix");
-              inherit pkgs;
-            };
+
+            integration-tests = pkgs.callPackage ./nixos-test.nix { };
             clippy = config.packages.envfs.override { enableClippy = true; };
           };
         devShells.default = pkgs.mkShell {
