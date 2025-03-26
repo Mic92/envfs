@@ -35,6 +35,6 @@ cargo set-version "$version"
 cargo build
 git add Cargo.lock Cargo.toml
 git commit -m "bump version ${version}"
-git tag -e "${version}"
+git tag "${version}"
 
 echo "now run 'git push origin $version'"
