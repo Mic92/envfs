@@ -3,8 +3,8 @@ use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyStatfs,
     ReplyXattr, Request,
 };
-use libc::{endmntent, getmntent, setmntent, FILE};
 use libc::{ENODATA, ENOENT};
+use libc::{FILE, endmntent, getmntent, setmntent};
 use log::{debug, warn};
 use nix::errno::Errno;
 use nix::fcntl::{openat, AtFlags, OFlag};
@@ -30,7 +30,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::result::Result;
-use crate::setrlimit::{setrlimit, Rlimit};
+use crate::setrlimit::{Rlimit, setrlimit};
 
 const TTL: Duration = Duration::from_secs(1);
 
@@ -372,11 +372,7 @@ where
 {
     let full_path = safe_resolve_path(&path.join(&exe_name), mountpoints)?;
     let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
-    if res.is_ok() {
-        Some(full_path)
-    } else {
-        None
-    }
+    if res.is_ok() { Some(full_path) } else { None }
 }
 
 fn which<P1, P2>(
