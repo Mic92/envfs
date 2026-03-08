@@ -24,6 +24,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -72,6 +73,7 @@ pub struct EnvFs {
     inode_counter: Arc<RwLock<InodeCounter>>,
     fallback_paths: Arc<Vec<PathBuf>>,
     mountpoints: Vec<PathBuf>,
+    ready: mpsc::Sender<()>,
 }
 
 fn open_mntent(path: &str) -> Result<*mut FILE> {
@@ -139,6 +141,7 @@ impl EnvFs {
             })),
             fallback_paths: Arc::new(fallback_paths.to_vec()),
             mountpoints: vec![],
+            ready: mpsc::channel().0,
         })
     }
 
@@ -167,11 +170,14 @@ impl EnvFs {
     pub fn mount(self, mountpoints: &[PathBuf]) -> Result<fuser::BackgroundSession> {
         assert!(mountpoints.len() > 1);
 
+        let (ready, ready_recv) = mpsc::channel();
+
         let cntrfs = EnvFs {
             inodes: Arc::clone(&self.inodes),
             inode_counter: Arc::clone(&self.inode_counter),
             fallback_paths: Arc::clone(&self.fallback_paths),
             mountpoints: mountpoints.to_vec(),
+            ready,
         };
 
         let session = try_with!(
@@ -187,6 +193,8 @@ impl EnvFs {
             ),
             "failed to spawn mount2"
         );
+
+        let _ = ready_recv.recv();
 
         for mountpoint in mountpoints.iter().skip(1) {
             try_with!(
@@ -521,6 +529,16 @@ fn get_path_from_mem(pid: Pid, envp: usize) -> Result<OsString> {
 }
 
 impl Filesystem for EnvFs {
+    fn init(
+        &mut self,
+        _req: &Request,
+        _config: &mut fuser::KernelConfig,
+    ) -> std::result::Result<(), i32> {
+        // Fuser spawn_mount may return without filesystem being mounted.
+        // Use `init` call to indicate readiness. https://github.com/cberner/fuser/issues/325
+        let _ = self.ready.send(());
+        Ok(())
+    }
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         // no subdirectories
         if parent != fuser::FUSE_ROOT_ID {
