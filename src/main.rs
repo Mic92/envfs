@@ -4,6 +4,7 @@ use nix::sys::signal;
 use nix::{mount, unistd};
 use simple_error::bail;
 use simple_error::try_with;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 
@@ -73,8 +74,30 @@ fn wait_signal(mountpoints: &[PathBuf]) -> Result<()> {
 }
 
 fn serve_fs(opts: &Options) -> Result<()> {
+    let mut notify = None;
     if !opts.foreground {
-        try_with!(unistd::daemon(true, true), "cannot daemonize");
+        // We need to make sure the foreground process does not exit until we have successfully
+        // mounted the file system (otherwise, systemd will fail with protocol error).
+        //
+        // We do this by creating a pipe. The pipe can be closed by either the child process exiting,
+        // or the child process closing it (which signals successfully mounting).
+        let (mut parent, child) = try_with!(std::io::pipe(), "cannot create pipe");
+        // SAFETY: we're still single threaded at this point.
+        match try_with!(unsafe { unistd::fork() }, "cannot fork") {
+            unistd::ForkResult::Child => {
+                drop(parent);
+                notify = Some(child);
+            }
+            unistd::ForkResult::Parent { .. } => {
+                drop(child);
+                if try_with!(parent.read(&mut [0]), "cannot read from pipe") == 0 {
+                    // In this case, the child process exited before notifying us.
+                    bail!("child process exited");
+                }
+                info!("Background process ready");
+                return Ok(());
+            }
+        }
     }
 
     let fs = try_with!(
@@ -83,6 +106,19 @@ fn serve_fs(opts: &Options) -> Result<()> {
     );
 
     let session = try_with!(fs.mount(&opts.mountpoints), "cannot start fuse sessions");
+
+    // Notify the foreground process on successful mount.
+    if let Some(mut notify) = notify {
+        info!("Notifying foreground process");
+        // Release stdin/stdout/stderr and cwd.
+        _ = std::env::set_current_dir("/");
+        if let Ok(null) = std::fs::File::open("/dev/null") {
+            _ = unistd::dup2_stdin(&null);
+            _ = unistd::dup2_stdout(&null);
+            _ = unistd::dup2_stderr(&null);
+        }
+        _ = notify.write_all(&[0]);
+    }
 
     wait_signal(&opts.mountpoints)?;
     drop(session);
