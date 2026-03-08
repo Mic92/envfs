@@ -99,7 +99,7 @@ impl Drop for MountGuard<'_> {
 }
 
 fn show_help(prog_name: &str) {
-    eprintln!("USAGE: {} [options] mountpoint", prog_name);
+    eprintln!("USAGE: {prog_name} [options] mountpoint");
     eprintln!("-h, --help             show help");
     eprintln!("-f, --foreground       do not daemonize");
     eprintln!("-o debug               debug logging");
@@ -192,7 +192,7 @@ fn run_app(args: &[String]) -> i32 {
     let mut opts = match parse_options(&args[1..]) {
         Ok(opts) => opts,
         Err(err) => {
-            eprintln!("{}: {}", app_name, err);
+            eprintln!("{app_name}: {err}");
             return 1;
         }
     };
@@ -216,14 +216,14 @@ fn run_app(args: &[String]) -> i32 {
     }
     if opts.debug {
         if let Err(err) = enable_debug_log() {
-            eprintln!("{}: cannot set up logging: {}", app_name, err);
+            eprintln!("{app_name}: cannot set up logging: {err}");
         }
     }
 
     match serve_fs(&opts) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             return 1;
         }
     };
