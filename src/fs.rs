@@ -491,7 +491,7 @@ where
     let args = match get_syscall_args(pid) {
         Ok(args) => args,
         Err(e) => {
-            debug!("Could not parse syscall arguments: {}", e);
+            debug!("Could not parse syscall arguments: {e}");
             return None;
         }
     };
@@ -522,10 +522,7 @@ where
                 }
             }
             Err(e) => {
-                debug!(
-                    "Could not read environment variables from child from memory: {}",
-                    e
-                )
+                debug!("Could not read environment variables from child from memory: {e}")
                 // fallback to the default path
             }
         }
