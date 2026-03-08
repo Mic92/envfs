@@ -168,7 +168,7 @@ impl EnvFs {
     }
 
     pub fn mount(self, mountpoints: &[PathBuf]) -> Result<fuser::BackgroundSession> {
-        assert!(mountpoints.len() > 1);
+        assert!(!mountpoints.is_empty());
 
         let (ready, ready_recv) = mpsc::channel();
 
