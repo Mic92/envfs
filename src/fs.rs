@@ -10,7 +10,7 @@ use nix::errno::Errno;
 use nix::mount::mount;
 use nix::unistd::{self, Pid};
 use simple_error::try_with;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::ffi::{CStr, CString};
 use std::ffi::{OsStr, OsString};
@@ -258,23 +258,78 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
+/// Resolve a path to a real file without triggering recursion into envfs filesystems.
+///
+/// It is possible that a path component is a symlink that points into envfs,
+/// especially if using environments prepared by (e.g.) Python venvs. To be safe
+/// we also resolve intermediate paths too, though in practice these should not
+/// be an issues since envfs only resolves the final component of a path.
+fn safe_resolve_path<P>(path: &Path, mountpoints: &[P]) -> Option<PathBuf>
+where
+    P: AsRef<Path>,
+{
+    const MAX_SYMLINK_DEPTH: usize = 40;
+
+    let mut symlink_count = 0;
+    let mut resolved = PathBuf::from("/");
+    let mut queue: VecDeque<OsString> = path
+        .components()
+        .map(|c| c.as_os_str().to_owned())
+        .collect();
+
+    while let Some(component) = queue.pop_front() {
+        if component == "/" {
+            resolved = PathBuf::from("/");
+        } else if component == "." {
+            // Skip current directory components
+            continue;
+        } else if component == ".." {
+            // Handle parent directory components
+            resolved.pop();
+        } else {
+            let candidate = resolved.join(&component);
+
+            // If at any point our candidate resolution points into an envfs mountpoint
+            // we should abort at once otherwise we will induce recursion.
+            if mountpoints.iter().any(|m| candidate.starts_with(m)) {
+                return None;
+            }
+
+            let meta = candidate.symlink_metadata().ok()?;
+
+            // Do we still need this check if we already check for mountpoints?
+            if meta.nlink() as u32 == ENVFS_MAGIC {
+                return None;
+            }
+
+            if meta.file_type().is_symlink() {
+                symlink_count += 1;
+                if symlink_count > MAX_SYMLINK_DEPTH {
+                    return None;
+                }
+                let target = fs::read_link(&candidate).ok()?;
+                // Prepend the symlink target's components for processing.
+                // `resolved` stays as the current directory (parent of the symlink),
+                // which is the correct base for relative targets. It will be
+                // truncated if the target starts with "/".
+                for c in target.components().rev() {
+                    queue.push_front(c.as_os_str().to_owned());
+                }
+            } else {
+                resolved = candidate;
+            }
+        }
+    }
+
+    Some(resolved)
+}
+
 fn _which<P1, P2>(path: &Path, exe_name: P1, mountpoints: &[P2]) -> Option<PathBuf>
 where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    if mountpoints.iter().any(|m| path.starts_with(m)) {
-        return None;
-    }
-
-    // Do we still need this check if we already check for mountpoints?
-    if let Ok(stat) = path.symlink_metadata() {
-        if stat.nlink() as u32 == ENVFS_MAGIC {
-            return None;
-        }
-    }
-
-    let full_path = path.join(&exe_name);
+    let full_path = safe_resolve_path(&path.join(&exe_name), mountpoints)?;
     let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
     if res.is_ok() {
         Some(full_path)
