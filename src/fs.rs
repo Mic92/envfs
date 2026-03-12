@@ -1,9 +1,9 @@
 use concurrent_hashmap::ConcHashMap;
+use fuser::Errno as FuseErrno;
 use fuser::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyStatfs,
-    ReplyXattr, Request,
+    FileAttr, FileType, Filesystem, Generation, INodeNo, ReplyAttr, ReplyData, ReplyDirectory,
+    ReplyEntry, ReplyStatfs, ReplyXattr, Request,
 };
-use libc::{ENODATA, ENOENT};
 use libc::{FILE, endmntent, getmntent, setmntent};
 use log::{debug, warn};
 use nix::errno::Errno;
@@ -40,7 +40,7 @@ const ENVFS_NAME: &str = "envfs";
 const ENVFS_NAME_C: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"envfs\0") };
 
 const ROOT_DIR_ATTR: FileAttr = FileAttr {
-    ino: fuser::FUSE_ROOT_ID,
+    ino: INodeNo::ROOT,
     size: 0,
     blocks: 0,
     atime: UNIX_EPOCH,
@@ -153,17 +153,17 @@ impl EnvFs {
         counter.next_number += 1;
 
         if next_number == 0 {
-            counter.next_number = fuser::FUSE_ROOT_ID + 1;
+            counter.next_number = INodeNo::ROOT.0 + 1;
             counter.generation += 1;
         }
 
         (next_number, counter.generation)
     }
 
-    fn inode(&self, ino: u64) -> nix::Result<Arc<Inode>> {
-        assert!(ino > 0);
+    fn inode(&self, ino: INodeNo) -> nix::Result<Arc<Inode>> {
+        assert!(ino.0 > 0);
 
-        match self.inodes.find(&ino) {
+        match self.inodes.find(&ino.0) {
             Some(inode) => Ok(Arc::clone(inode.get())),
             None => Err(Errno::ESTALE),
         }
@@ -182,17 +182,16 @@ impl EnvFs {
             ready,
         };
 
+        let mut config = fuser::Config::default();
+        config.mount_options = vec![
+            fuser::MountOption::FSName(ENVFS_NAME.to_string()),
+            fuser::MountOption::DefaultPermissions,
+            fuser::MountOption::RO,
+        ];
+        config.acl = fuser::SessionACL::All;
+
         let session = try_with!(
-            fuser::spawn_mount2(
-                cntrfs,
-                mountpoints[0].clone(),
-                &[
-                    fuser::MountOption::FSName(ENVFS_NAME.to_string()),
-                    fuser::MountOption::AllowOther,
-                    fuser::MountOption::DefaultPermissions,
-                    fuser::MountOption::RO
-                ]
-            ),
+            fuser::spawn_mount2(cntrfs, mountpoints[0].clone(), &config),
             "failed to spawn mount2"
         );
 
@@ -241,13 +240,13 @@ macro_rules! tryfuse {
             Ok(val) => val,
             Err(err) => {
                 debug!("return error {} on {}:{}", err, file!(), line!());
-                return $reply.error(err as i32);
+                return $reply.error(FuseErrno::from_i32(err as i32));
             }
         }
     };
 }
 
-fn symlink_attr(ino: u64) -> FileAttr {
+fn symlink_attr(ino: INodeNo) -> FileAttr {
     FileAttr {
         ino,
         size: 0,
@@ -625,21 +624,17 @@ fn get_path_from_mem(pid: Pid, envp: usize) -> Result<OsString> {
 }
 
 impl Filesystem for EnvFs {
-    fn init(
-        &mut self,
-        _req: &Request,
-        _config: &mut fuser::KernelConfig,
-    ) -> std::result::Result<(), i32> {
+    fn init(&mut self, _req: &Request, _config: &mut fuser::KernelConfig) -> std::io::Result<()> {
         // Fuser spawn_mount may return without filesystem being mounted.
         // Use `init` call to indicate readiness. https://github.com/cberner/fuser/issues/325
         let _ = self.ready.send(());
         Ok(())
     }
 
-    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         // no subdirectories
-        if parent != fuser::FUSE_ROOT_ID {
-            reply.error(ENOENT);
+        if parent != INodeNo::ROOT {
+            reply.error(FuseErrno::ENOENT);
             return;
         }
 
@@ -649,7 +644,7 @@ impl Filesystem for EnvFs {
             Some(path) => {
                 let (next_number, generation) = self.next_inode_number();
 
-                let attr = symlink_attr(next_number);
+                let attr = symlink_attr(INodeNo(next_number));
 
                 let inode = Arc::new(Inode {
                     name: PathBuf::from(name),
@@ -659,16 +654,22 @@ impl Filesystem for EnvFs {
                 });
                 assert!(self.inodes.insert(next_number, inode).is_none());
 
-                reply.entry(&Duration::from_secs(0), &attr, generation);
+                reply.entry(&Duration::from_secs(0), &attr, Generation(generation));
             }
             None => {
-                reply.error(ENOENT);
+                reply.error(FuseErrno::ENOENT);
             }
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        if ino == fuser::FUSE_ROOT_ID {
+    fn getattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: Option<fuser::FileHandle>,
+        reply: ReplyAttr,
+    ) {
+        if ino == INodeNo::ROOT {
             reply.attr(&TTL, &ROOT_DIR_ATTR);
             return;
         }
@@ -676,39 +677,39 @@ impl Filesystem for EnvFs {
         reply.attr(&TTL, &symlink_attr(ino));
     }
 
-    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
-        reply.error(ENOENT);
+    fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
+        reply.error(FuseErrno::ENOENT);
     }
 
     fn readdir(
-        &mut self,
+        &self,
         _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
+        ino: INodeNo,
+        _fh: fuser::FileHandle,
+        offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        if ino != fuser::FUSE_ROOT_ID {
-            reply.error(ENOENT);
+        if ino != INodeNo::ROOT {
+            reply.error(FuseErrno::ENOENT);
             return;
         }
 
         let entries = vec![
-            (1, FileType::Directory, "."),
-            (1, FileType::Directory, ".."),
+            (INodeNo::ROOT, FileType::Directory, "."),
+            (INodeNo::ROOT, FileType::Directory, ".."),
         ];
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // i + 1 means the index of the next entry
-            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+            if reply.add(entry.0, (i + 1) as u64, entry.1, entry.2) {
                 break;
             }
         }
         reply.ok();
     }
 
-    fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
-        match self.inodes.find_mut(&ino) {
+    fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        match self.inodes.find_mut(&ino.0) {
             Some(ref mut inode_lock) => {
                 let inode = inode_lock.get();
                 let mut old_nlookup = inode.nlookup.write().unwrap();
@@ -723,24 +724,24 @@ impl Filesystem for EnvFs {
             None => return,
         };
 
-        self.inodes.remove(&ino);
+        self.inodes.remove(&ino.0);
     }
 
     fn destroy(&mut self) {
         self.inodes.clear();
     }
     fn getxattr(
-        &mut self,
+        &self,
         _req: &Request,
-        _ino: u64,
+        _ino: INodeNo,
         _name: &OsStr,
         _size: u32,
         reply: ReplyXattr,
     ) {
-        reply.error(ENODATA);
+        reply.error(FuseErrno::ENODATA);
     }
 
-    fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
+    fn readlink(&self, req: &Request, ino: INodeNo, reply: ReplyData) {
         let inode = tryfuse!(self.inode(ino), reply);
         let pid = Pid::from_raw(req.pid() as i32);
         if inode.pid != pid {
@@ -751,7 +752,7 @@ impl Filesystem for EnvFs {
                     return;
                 }
                 None => {
-                    reply.error(ENOENT);
+                    reply.error(FuseErrno::ENOENT);
                     return;
                 }
             }
