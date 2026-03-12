@@ -7,7 +7,7 @@ use libc::{ENODATA, ENOENT};
 use libc::{FILE, endmntent, getmntent, setmntent};
 use log::{debug, warn};
 use nix::errno::Errno;
-use nix::fcntl::{openat, AtFlags, OFlag};
+use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::mount::mount;
 use nix::sys::stat::fstatat;
 use nix::unistd::{self, Pid};
@@ -635,6 +635,7 @@ impl Filesystem for EnvFs {
         let _ = self.ready.send(());
         Ok(())
     }
+
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         // no subdirectories
         if parent != fuser::FUSE_ROOT_ID {
