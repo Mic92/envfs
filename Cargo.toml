@@ -15,3 +15,6 @@ fuser = { version = "0.16", default-features = false }
 [dependencies.concurrent-hashmap]
 version = "0.2.*"
 default-features = false
+
+[dev-dependencies]
+tempfile = "3"
