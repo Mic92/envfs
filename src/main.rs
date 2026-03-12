@@ -86,6 +86,9 @@ fn serve_fs(opts: &Options) -> Result<()> {
         match try_with!(unsafe { unistd::fork() }, "cannot fork") {
             unistd::ForkResult::Child => {
                 drop(parent);
+                // Create a new session to detach from the controlling
+                // terminal, matching the behaviour of daemon(3).
+                let _ = unistd::setsid();
                 notify = Some(child);
             }
             unistd::ForkResult::Parent { .. } => {
