@@ -39,6 +39,7 @@
             # disable riscv64 for now until https://github.com/NixOS/nixpkgs/pull/393093 is merged
           } // lib.optionalAttrs (pkgs.stdenv.isLinux && !pkgs.stdenv.hostPlatform.isRiscV) {
             integration-tests = pkgs.callPackage ./nixos-test.nix { };
+            integration-tests-systemd-stage-1 = pkgs.callPackage ./nixos-test-systemd-stage1.nix { };
           };
         devShells.default = pkgs.mkShell {
           buildInputs = [
