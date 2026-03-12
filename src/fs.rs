@@ -7,7 +7,9 @@ use libc::{endmntent, getmntent, setmntent, FILE};
 use libc::{ENODATA, ENOENT};
 use log::{debug, warn};
 use nix::errno::Errno;
+use nix::fcntl::{openat, AtFlags, OFlag};
 use nix::mount::mount;
+use nix::sys::stat::fstatat;
 use nix::unistd::{self, Pid};
 use simple_error::try_with;
 use std::collections::{HashMap, VecDeque};
@@ -21,8 +23,8 @@ use std::io::{BufRead, BufReader};
 use std::io::{Read, SeekFrom};
 use std::mem::size_of;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::os::unix::io::OwnedFd;
+use std::path::{Component, Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
@@ -258,12 +260,25 @@ fn symlink_attr(ino: u64) -> FileAttr {
     }
 }
 
+/// Open the root directory as an O_PATH fd.
+fn open_root() -> Option<OwnedFd> {
+    nix::fcntl::open(
+        Path::new("/"),
+        OFlag::O_PATH | OFlag::O_DIRECTORY,
+        nix::sys::stat::Mode::empty(),
+    )
+    .ok()
+}
+
 /// Resolve a path to a real file without triggering recursion into envfs filesystems.
 ///
-/// It is possible that a path component is a symlink that points into envfs,
-/// especially if using environments prepared by (e.g.) Python venvs. To be safe
-/// we also resolve intermediate paths too, though in practice these should not
-/// be an issues since envfs only resolves the final component of a path.
+/// Uses O_PATH file descriptors with openat()/fstatat()/readlinkat() so that
+/// each component is resolved one hop at a time relative to an already-open
+/// parent fd. This avoids full path traversals by the kernel, which would
+/// deadlock if any component lives on an envfs mountpoint.
+///
+/// Returns `None` when the path is unresolvable or when resolution would enter
+/// an envfs mountpoint.
 fn safe_resolve_path<P>(path: &Path, mountpoints: &[P]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
@@ -272,52 +287,78 @@ where
 
     let mut symlink_count = 0;
     let mut resolved = PathBuf::from("/");
+    let mut dir_fd: OwnedFd = open_root()?;
     let mut queue: VecDeque<OsString> = path
         .components()
         .map(|c| c.as_os_str().to_owned())
         .collect();
 
     while let Some(component) = queue.pop_front() {
-        if component == "/" {
-            resolved = PathBuf::from("/");
-        } else if component == "." {
-            // Skip current directory components
-            continue;
-        } else if component == ".." {
-            // Handle parent directory components
-            resolved.pop();
-        } else {
-            let candidate = resolved.join(&component);
-
-            // If at any point our candidate resolution points into an envfs mountpoint
-            // we should abort at once otherwise we will induce recursion.
-            if mountpoints.iter().any(|m| candidate.starts_with(m)) {
-                return None;
+        let comp_path = Path::new(&component);
+        match comp_path.components().next()? {
+            Component::RootDir => {
+                resolved = PathBuf::from("/");
+                dir_fd = open_root()?;
             }
-
-            let meta = candidate.symlink_metadata().ok()?;
-
-            // Do we still need this check if we already check for mountpoints?
-            if meta.nlink() as u32 == ENVFS_MAGIC {
-                return None;
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                resolved.pop();
+                dir_fd = openat(
+                    &dir_fd,
+                    Path::new(".."),
+                    OFlag::O_PATH | OFlag::O_DIRECTORY,
+                    nix::sys::stat::Mode::empty(),
+                )
+                .ok()?;
             }
+            Component::Normal(name) => {
+                let candidate = resolved.join(name);
 
-            if meta.file_type().is_symlink() {
-                symlink_count += 1;
-                if symlink_count > MAX_SYMLINK_DEPTH {
+                // Abort if resolution would enter an envfs mountpoint.
+                if mountpoints.iter().any(|m| candidate.starts_with(m)) {
                     return None;
                 }
-                let target = fs::read_link(&candidate).ok()?;
-                // Prepend the symlink target's components for processing.
-                // `resolved` stays as the current directory (parent of the symlink),
-                // which is the correct base for relative targets. It will be
-                // truncated if the target starts with "/".
-                for c in target.components().rev() {
-                    queue.push_front(c.as_os_str().to_owned());
+
+                // Stat the component via the parent fd without following
+                // symlinks. This never triggers FUSE open/read on the child.
+                let stat = fstatat(&dir_fd, Path::new(name), AtFlags::AT_SYMLINK_NOFOLLOW).ok()?;
+
+                // Defense-in-depth: catch envfs inodes even if the
+                // mountpoints list is incomplete or stale.
+                if stat.st_nlink as u32 == ENVFS_MAGIC {
+                    return None;
                 }
-            } else {
-                resolved = candidate;
+
+                if (stat.st_mode & libc::S_IFMT) == libc::S_IFLNK {
+                    symlink_count += 1;
+                    if symlink_count > MAX_SYMLINK_DEPTH {
+                        return None;
+                    }
+                    let target = nix::fcntl::readlinkat(&dir_fd, Path::new(name)).ok()?;
+                    // Prepend the symlink target's components for processing.
+                    // `resolved`/`dir_fd` stay as the parent of the symlink,
+                    // which is the correct base for relative targets. An
+                    // absolute target will begin with Component::RootDir,
+                    // resetting both.
+                    let target_path = PathBuf::from(target);
+                    for c in target_path.components().rev() {
+                        queue.push_front(c.as_os_str().to_owned());
+                    }
+                } else {
+                    // Advance into this component.  O_PATH means the kernel
+                    // performs a single directory lookup and never sends a FUSE
+                    // open/read request.
+                    dir_fd = openat(
+                        &dir_fd,
+                        Path::new(name),
+                        OFlag::O_PATH,
+                        nix::sys::stat::Mode::empty(),
+                    )
+                    .ok()?;
+                    resolved = candidate;
+                }
             }
+            Component::Prefix(_) => unreachable!("no Windows prefixes on Linux"),
         }
     }
 
@@ -705,5 +746,86 @@ impl Filesystem for EnvFs {
         }
         let data = inode.path.as_os_str().as_bytes();
         reply.data(data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs as unix_fs;
+    use tempfile::TempDir;
+
+    /// Helper: create a file inside a directory, creating parents as needed.
+    fn touch(base: &Path, rel: &str) {
+        let p = base.join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&p, "").unwrap();
+    }
+
+    #[test]
+    fn resolves_plain_path() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "a/b/c");
+
+        let mountpoints: Vec<PathBuf> = vec![];
+        let resolved = safe_resolve_path(&tmp.path().join("a/b/c"), &mountpoints);
+        assert_eq!(resolved, Some(tmp.path().join("a/b/c")));
+    }
+
+    #[test]
+    fn rejects_path_into_mountpoint() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "usr/bin/sh");
+
+        let mountpoints = vec![tmp.path().join("usr/bin")];
+        let resolved = safe_resolve_path(&tmp.path().join("usr/bin/sh"), &mountpoints);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn rejects_symlink_pointing_into_mountpoint() {
+        // Reproduces the Python venv deadlock from #196: a symlink on PATH
+        // points into an envfs mountpoint.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("usr/bin")).unwrap();
+        touch(tmp.path(), "usr/bin/python");
+        fs::create_dir_all(tmp.path().join("venv/bin")).unwrap();
+        unix_fs::symlink(
+            tmp.path().join("usr/bin/python"),
+            tmp.path().join("venv/bin/python"),
+        )
+        .unwrap();
+
+        let mountpoints = vec![tmp.path().join("usr/bin")];
+        let resolved = safe_resolve_path(&tmp.path().join("venv/bin/python"), &mountpoints);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn rejects_symlink_loop() {
+        let tmp = TempDir::new().unwrap();
+        unix_fs::symlink(tmp.path().join("b"), tmp.path().join("a")).unwrap();
+        unix_fs::symlink(tmp.path().join("a"), tmp.path().join("b")).unwrap();
+
+        let mountpoints: Vec<PathBuf> = vec![];
+        let resolved = safe_resolve_path(&tmp.path().join("a"), &mountpoints);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn rejects_indirect_symlink_into_mountpoint() {
+        // link1 -> link2 -> /mountpoint/exe: chained symlinks that
+        // eventually land in an envfs mountpoint.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("mnt")).unwrap();
+        touch(tmp.path(), "mnt/exe");
+        unix_fs::symlink(tmp.path().join("mnt/exe"), tmp.path().join("link2")).unwrap();
+        unix_fs::symlink(tmp.path().join("link2"), tmp.path().join("link1")).unwrap();
+
+        let mountpoints = vec![tmp.path().join("mnt")];
+        let resolved = safe_resolve_path(&tmp.path().join("link1"), &mountpoints);
+        assert_eq!(resolved, None);
     }
 }
