@@ -20,7 +20,7 @@ let
     # Systemd is smart enough to not mount /bin if it's already mounted.
     "/bin" = {
       device = "/usr/bin";
-      fsType = "auto";
+      fsType = lib.mkDefault "auto";
       options = [ "bind" "nofail" ];
     };
   };
