@@ -4,6 +4,7 @@
 , writeScript
 , bash
 , python3
+, fish
 ,
 }:
 let
@@ -37,6 +38,15 @@ testers.runNixOSTest {
         # also picks up PATH that was set after execve
         "! /usr/bin/hello",
         "PATH=${hello}/bin /usr/bin/hello",
+    )
+
+    # fish stats commands before executing them (https://github.com/Mic92/envfs/issues/173)
+    machine.succeed("PATH=${coreutils}/bin ${fish}/bin/fish -c '/usr/bin/cp --version'")
+    # other programs must not see /usr/bin entries via stat: podman probes
+    # /usr/bin/conmon and then execs it without PATH (https://github.com/Mic92/envfs/issues/180)
+    machine.fail(
+        "PATH=${coreutils}/bin stat /usr/bin/cp",
+        "PATH=${coreutils}/bin test -e /usr/bin/cp",
     )
 
     out = machine.succeed("PATH=${coreutils}/bin readlink /usr/bin/cp")

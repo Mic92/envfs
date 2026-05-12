@@ -470,9 +470,16 @@ fn is_access_syscall(num: usize) -> bool {
     num == libc::SYS_faccessat as usize || num == libc::SYS_faccessat2 as usize
 }
 
-// TODO: Currently only supports arch which has the newfstatat system call
-fn is_fstatat_syscall(num: usize) -> bool {
-    num == libc::SYS_newfstatat as usize
+fn is_stat_syscall(num: usize) -> bool {
+    num == libc::SYS_newfstatat as usize || num == libc::SYS_statx as usize
+}
+
+// fish stats a command before executing it, so it needs stat resolved. Other
+// programs (e.g. podman looking for conmon) stat /usr/bin candidates and then
+// exec them with a scrubbed environment, which fails if stat succeeded.
+fn is_fish(pid: Pid) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .is_ok_and(|exe| exe.file_name() == Some(OsStr::new("fish")))
 }
 
 // Relocatable interpreters locate their prefix via readlink of argv[0].
@@ -547,7 +554,7 @@ where
     let allowed_syscall = is_open_syscall(args[0])
         || is_execve_syscall(args[0])
         || is_access_syscall(args[0])
-        || is_fstatat_syscall(args[0])
+        || (is_stat_syscall(args[0]) && is_fish(pid))
         || is_readlink_syscall(args[0])
         || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
