@@ -470,9 +470,8 @@ fn is_access_syscall(num: usize) -> bool {
     num == libc::SYS_faccessat as usize || num == libc::SYS_faccessat2 as usize
 }
 
-// TODO: Currently only supports arch which has the newfstatat system call
-fn is_fstatat_syscall(num: usize) -> bool {
-    num == libc::SYS_newfstatat as usize
+fn is_stat_syscall(num: usize) -> bool {
+    num == libc::SYS_newfstatat as usize || num == libc::SYS_statx as usize
 }
 
 fn resolve_target<P1, P2>(
@@ -536,7 +535,7 @@ where
     let allowed_syscall = is_open_syscall(args[0])
         || is_execve_syscall(args[0])
         || is_access_syscall(args[0])
-        || is_fstatat_syscall(args[0])
+        || is_stat_syscall(args[0])
         || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     if allowed_syscall {
@@ -840,5 +839,15 @@ mod tests {
         let mountpoints = vec![tmp.path().join("mnt")];
         let resolved = safe_resolve_path(&tmp.path().join("link1"), &mountpoints);
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn stat_syscall_recognizes_statx() {
+        // fish shell uses statx instead of newfstatat to check if a file
+        // exists before executing it. Without recognizing statx, envfs
+        // returns ENOENT to fish for every /usr/bin/<cmd> lookup. (#173)
+        assert!(is_stat_syscall(libc::SYS_newfstatat as usize));
+        assert!(is_stat_syscall(libc::SYS_statx as usize));
+        assert!(!is_stat_syscall(0));
     }
 }
