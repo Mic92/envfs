@@ -19,7 +19,7 @@
       ];
       flake.nixosModules.envfs = import ./modules/envfs.nix;
       perSystem = { lib, config, pkgs, ... }: {
-        packages = lib.optionalAttrs pkgs.stdenv.isLinux {
+        packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           envfs = pkgs.callPackage ./default.nix {
             packageSrc = self;
           };
@@ -30,14 +30,14 @@
             packages = lib.mapAttrs' (n: lib.nameValuePair "package-${n}") config.packages;
             devShells = lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") config.devShells;
           in
-          packages // devShells // lib.optionalAttrs pkgs.stdenv.isLinux {
+          packages // devShells // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             envfsCrossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix {
               packageSrc = self;
             };
 
             clippy = config.packages.envfs.override { enableClippy = true; };
             # disable riscv64 for now until https://github.com/NixOS/nixpkgs/pull/393093 is merged
-          } // lib.optionalAttrs (pkgs.stdenv.isLinux && !pkgs.stdenv.hostPlatform.isRiscV) {
+          } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && !pkgs.stdenv.hostPlatform.isRiscV) {
             integration-tests = pkgs.callPackage ./nixos-test.nix { };
             integration-tests-systemd-stage-1 = pkgs.callPackage ./nixos-test-systemd-stage1.nix { };
           };
