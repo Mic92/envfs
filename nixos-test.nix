@@ -39,6 +39,9 @@ testers.runNixOSTest {
         "PATH=${hello}/bin /usr/bin/hello",
     )
 
+    out = machine.succeed("PATH=${coreutils}/bin readlink /usr/bin/cp")
+    assert out.startswith("${coreutils}/bin/"), out
+
     out = machine.succeed("PATH=${python3}/bin ${pythonShebang}")
     print(out)
     assert out == "OK\n"

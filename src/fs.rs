@@ -475,6 +475,17 @@ fn is_fstatat_syscall(num: usize) -> bool {
     num == libc::SYS_newfstatat as usize
 }
 
+// Relocatable interpreters locate their prefix via readlink of argv[0].
+#[cfg(not(target_arch = "aarch64"))]
+fn is_readlink_syscall(num: usize) -> bool {
+    num == libc::SYS_readlink as usize || num == libc::SYS_readlinkat as usize
+}
+
+#[cfg(target_arch = "aarch64")]
+fn is_readlink_syscall(num: usize) -> bool {
+    num == libc::SYS_readlinkat as usize
+}
+
 fn resolve_target<P1, P2>(
     pid: Pid,
     name: P1,
@@ -537,6 +548,7 @@ where
         || is_execve_syscall(args[0])
         || is_access_syscall(args[0])
         || is_fstatat_syscall(args[0])
+        || is_readlink_syscall(args[0])
         || env.contains_key(OsStr::new("ENVFS_RESOLVE_ALWAYS"));
 
     if allowed_syscall {
