@@ -191,8 +191,8 @@ impl EnvFs {
         config.acl = fuser::SessionACL::All;
 
         let session = try_with!(
-            fuser::spawn_mount2(cntrfs, mountpoints[0].clone(), &config),
-            "failed to spawn mount2"
+            fuser::spawn_mount(cntrfs, mountpoints[0].clone(), &config),
+            "failed to spawn mount"
         );
 
         let _ = ready_recv.recv();
