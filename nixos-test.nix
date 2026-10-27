@@ -49,5 +49,14 @@ testers.runNixOSTest {
     out = machine.succeed("PATH=${bash}/bin ${bashShebang}")
     print(out)
     assert out == "OK\n"
+
+    # A daemon left over from a previous mount must not unmount its successor
+    # (https://github.com/Mic92/envfs/issues/238).
+    old_pid = machine.succeed("pgrep -x mount.envfs").strip()
+    machine.succeed("systemctl restart usr-bin.mount")
+    machine.wait_until_succeeds("mountpoint -q /usr/bin/")
+    # The old daemon exits once its FUSE session ends
+    machine.wait_until_fails(f"kill -0 {old_pid}", timeout=30)
+    machine.succeed("PATH= test -e /usr/bin/env")
   '';
 }

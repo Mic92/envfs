@@ -1,12 +1,14 @@
-use lazy_static::lazy_static;
+use fuser::BackgroundSession;
 use log::info;
-use nix::sys::signal;
+use nix::sys::signal::{SigSet, Signal};
 use nix::{mount, unistd};
 use simple_error::bail;
 use simple_error::try_with;
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::{Condvar, Mutex};
+use std::sync::mpsc;
+use std::thread;
 
 use crate::fs::EnvFs;
 use crate::logger::enable_debug_log;
@@ -17,16 +19,11 @@ mod logger;
 mod result;
 mod setrlimit;
 
+/// Unmounts on drop, but only mountpoints still backed by our own FUSE
+/// connection: after a restart, a newer daemon may own the same path.
 struct MountGuard<'a> {
     mountpoints: &'a [PathBuf],
-}
-
-lazy_static! {
-    static ref SIGNAL_RECEIVED: Condvar = Condvar::new();
-}
-
-extern "C" fn handle_sigint(_: i32) {
-    SIGNAL_RECEIVED.notify_all();
+    dev: u64,
 }
 
 struct Options {
@@ -39,37 +36,34 @@ struct Options {
     args: Vec<String>,
 }
 
-fn wait_signal(mountpoints: &[PathBuf]) -> Result<()> {
-    let guard = MountGuard { mountpoints };
+fn shutdown_signals() -> SigSet {
+    let mut sigset = SigSet::empty();
+    sigset.add(Signal::SIGINT);
+    sigset.add(Signal::SIGTERM);
+    sigset
+}
 
-    let sig_action = signal::SigAction::new(
-        signal::SigHandler::Handler(handle_sigint),
-        signal::SaFlags::empty(),
-        signal::SigSet::empty(),
-    );
+/// Blocks until SIGINT/SIGTERM arrives or the FUSE session ends because the
+/// kernel unmounted us; otherwise the daemon would outlive its mount.
+fn wait_for_shutdown(session: BackgroundSession) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
 
-    unsafe {
-        try_with!(
-            signal::sigaction(signal::SIGINT, &sig_action),
-            "Unable to register SIGINT handler"
-        );
-        try_with!(
-            signal::sigaction(signal::SIGTERM, &sig_action),
-            "Unable to register SIGTERM handler"
-        );
-    }
+    let sigset = shutdown_signals();
+    let signal_tx = tx.clone();
+    thread::spawn(move || {
+        if let Ok(sig) = sigset.wait() {
+            info!("Received {sig}");
+        }
+        let _ = signal_tx.send(());
+    });
+    thread::spawn(move || {
+        if let Err(e) = session.join() {
+            info!("FUSE session ended: {e}");
+        }
+        let _ = tx.send(());
+    });
 
-    let mutex = Mutex::new(());
-    let lock_result = try_with!(mutex.lock(), "cannot acquire lock");
-    let res = try_with!(
-        SIGNAL_RECEIVED.wait(lock_result),
-        "failed to wait for signal barrier"
-    );
-    info!("Stop fuse");
-
-    drop(guard);
-    drop(res);
-
+    try_with!(rx.recv(), "shutdown channel closed");
     Ok(())
 }
 
@@ -108,7 +102,21 @@ fn serve_fs(opts: &Options) -> Result<()> {
         "cannot create filesystem"
     );
 
+    // Block before any thread is spawned so every thread inherits the mask
+    // and the signals are only consumed by sigwait() in wait_for_shutdown.
+    try_with!(shutdown_signals().thread_block(), "cannot block signals");
+
     let session = try_with!(fs.mount(&opts.mountpoints), "cannot start fuse sessions");
+    let dev = try_with!(
+        std::fs::metadata(&opts.mountpoints[0]),
+        "cannot stat {}",
+        opts.mountpoints[0].display()
+    )
+    .dev();
+    let guard = MountGuard {
+        mountpoints: &opts.mountpoints,
+        dev,
+    };
 
     // Notify the foreground process on successful mount.
     if let Some(mut notify) = notify {
@@ -123,8 +131,9 @@ fn serve_fs(opts: &Options) -> Result<()> {
         _ = notify.write_all(&[0]);
     }
 
-    wait_signal(&opts.mountpoints)?;
-    drop(session);
+    wait_for_shutdown(session)?;
+    info!("Stop fuse");
+    drop(guard);
 
     Ok(())
 }
@@ -132,7 +141,12 @@ fn serve_fs(opts: &Options) -> Result<()> {
 impl Drop for MountGuard<'_> {
     fn drop(&mut self) {
         for mountpoint in self.mountpoints {
-            let _ = mount::umount(mountpoint);
+            match std::fs::metadata(mountpoint) {
+                Ok(m) if m.dev() == self.dev => {
+                    let _ = mount::umount(mountpoint);
+                }
+                _ => info!("{} is no longer ours, skip unmount", mountpoint.display()),
+            }
         }
     }
 }
