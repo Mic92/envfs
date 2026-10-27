@@ -35,11 +35,11 @@ in
 
   # Disabling the activation scripts above prevents the creation of 2
   # directories, which would normally be created just before switch-root at
-  # stage1. This causes problems when systemd is used in the initrd.
+  # stage1, which systemd in the initrd relies on.
   #
   # This only affects fresh installations or systems using impermanence/tmpfs
   # root, where these directories don't persist from a previous activation.
-  boot.initrd.systemd.tmpfiles.settings = lib.mkIf config.boot.initrd.systemd.enable {
+  boot.initrd.systemd.tmpfiles.settings = {
     "50-envfs" = {
       # During switch-root, systemd's base_filesystem_create_fd() creates an
       # empty /usr. Later at stage2, systemd initialize_runtime() checks
