@@ -475,9 +475,7 @@ fn is_fstatat_syscall(num: usize) -> bool {
     num == libc::SYS_newfstatat as usize
 }
 
-// Relocatable interpreters (python-build-standalone, node, ...) find their
-// install prefix by resolving the path they were started from, e.g. the
-// /usr/bin/python3 of a shebang.
+// Relocatable interpreters locate their prefix via readlink of argv[0].
 #[cfg(not(target_arch = "aarch64"))]
 fn is_readlink_syscall(num: usize) -> bool {
     num == libc::SYS_readlink as usize || num == libc::SYS_readlinkat as usize
