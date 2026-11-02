@@ -267,16 +267,6 @@ fn symlink_attr(ino: INodeNo) -> FileAttr {
     }
 }
 
-/// Open the root directory as an O_PATH fd.
-fn open_root() -> Option<OwnedFd> {
-    nix::fcntl::open(
-        Path::new("/"),
-        OFlag::O_PATH | OFlag::O_DIRECTORY,
-        nix::sys::stat::Mode::empty(),
-    )
-    .ok()
-}
-
 /// Resolve a path to a real file without triggering recursion into envfs filesystems.
 ///
 /// Uses O_PATH file descriptors with openat()/fstatat()/readlinkat() so that
@@ -284,9 +274,12 @@ fn open_root() -> Option<OwnedFd> {
 /// parent fd. This avoids full path traversals by the kernel, which would
 /// deadlock if any component lives on an envfs mountpoint.
 ///
+/// `root` is the directory that `/` refers to, both at the start of `path` and
+/// in absolute symlink targets.
+///
 /// Returns `None` when the path is unresolvable or when resolution would enter
 /// an envfs mountpoint.
-fn safe_resolve_path<P>(path: &Path, mountpoints: &[P]) -> Option<PathBuf>
+fn safe_resolve_path<P>(root: &OwnedFd, path: &Path, mountpoints: &[P]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -294,7 +287,7 @@ where
 
     let mut symlink_count = 0;
     let mut resolved = PathBuf::from("/");
-    let mut dir_fd: OwnedFd = open_root()?;
+    let mut dir_fd: OwnedFd = root.try_clone().ok()?;
     let mut queue: VecDeque<OsString> = path
         .components()
         .map(|c| c.as_os_str().to_owned())
@@ -305,11 +298,15 @@ where
         match comp_path.components().next()? {
             Component::RootDir => {
                 resolved = PathBuf::from("/");
-                dir_fd = open_root()?;
+                dir_fd = root.try_clone().ok()?;
             }
             Component::CurDir => continue,
             Component::ParentDir => {
-                resolved.pop();
+                // The kernel only stops `..` at the daemon's own root, so
+                // opening `..` at `root` could leave it.
+                if !resolved.pop() {
+                    continue;
+                }
                 dir_fd = openat(
                     &dir_fd,
                     Path::new(".."),
@@ -372,25 +369,41 @@ where
     Some(resolved)
 }
 
-fn _which<P1, P2>(path: &Path, exe_name: P1, mountpoints: &[P2]) -> Option<PathBuf>
+fn _which<P1, P2>(root: &OwnedFd, path: &Path, exe_name: P1, mountpoints: &[P2]) -> Option<PathBuf>
 where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    let full_path = safe_resolve_path(&path.join(&exe_name), mountpoints)?;
-    let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
+    let full_path = safe_resolve_path(root, &path.join(&exe_name), mountpoints)?;
+    let relative_path = full_path.strip_prefix("/").ok()?;
+    let res = unistd::faccessat(
+        root,
+        relative_path,
+        unistd::AccessFlags::X_OK,
+        AtFlags::empty(),
+    );
     if res.is_ok() { Some(full_path) } else { None }
 }
 
 struct Requester {
+    root: OwnedFd,
     cwd: Option<PathBuf>,
 }
 
 impl Requester {
-    fn new(pid: Pid) -> Requester {
-        Requester {
-            cwd: fs::read_link(format!("/proc/{pid}/cwd")).ok(),
-        }
+    fn new(pid: Pid) -> Option<Requester> {
+        let proc_dir = PathBuf::from("/proc").join(pid.to_string());
+        let root = nix::fcntl::open(
+            &proc_dir.join("root"),
+            OFlag::O_PATH | OFlag::O_DIRECTORY,
+            nix::sys::stat::Mode::empty(),
+        )
+        .ok()?;
+
+        Some(Requester {
+            root,
+            cwd: fs::read_link(proc_dir.join("cwd")).ok(),
+        })
     }
 
     fn search_dir(&self, entry: PathBuf) -> Option<PathBuf> {
@@ -421,12 +434,12 @@ where
 {
     let exe = env::split_paths(&path_env)
         .filter_map(|entry| requester.search_dir(entry))
-        .find_map(|dir| _which(&dir, &exe_name, mountpoints));
+        .find_map(|dir| _which(&requester.root, &dir, &exe_name, mountpoints));
 
     exe.or_else(|| {
         fallback_paths
             .iter()
-            .find_map(|dir| _which(dir, &exe_name, mountpoints))
+            .find_map(|dir| _which(&requester.root, dir, &exe_name, mountpoints))
     })
 }
 
@@ -550,7 +563,7 @@ where
         return None;
     }
 
-    let requester = Requester::new(pid);
+    let requester = Requester::new(pid)?;
 
     // execve is always allowed and handled differently
     if is_execve_syscall(args[0]) {
@@ -818,6 +831,7 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs as unix_fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use tempfile::TempDir;
 
@@ -828,6 +842,16 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(&p, "").unwrap();
+    }
+
+    /// Helper: open a directory as an O_PATH fd.
+    fn open_dir(path: &Path) -> OwnedFd {
+        nix::fcntl::open(
+            path,
+            OFlag::O_PATH | OFlag::O_DIRECTORY,
+            nix::sys::stat::Mode::empty(),
+        )
+        .unwrap()
     }
 
     /// Helper: create an executable file inside a directory.
@@ -890,13 +914,40 @@ mod tests {
         }
     }
 
+    fn bind_mount_privately(command: &mut Command, source: &Path, target: &Path) {
+        let source = source.to_path_buf();
+        let target = target.to_path_buf();
+
+        // SAFETY: the closure only makes system calls. nix copies short paths
+        // into a stack buffer, so the closure does not allocate.
+        unsafe {
+            command.pre_exec(move || {
+                // The new user namespace gives an unprivileged test process
+                // the capability to mount.
+                Errno::result(libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS))?;
+                mount(
+                    Some(source.as_path()),
+                    target.as_path(),
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>,
+                )?;
+                Ok(())
+            });
+        }
+    }
+
     #[test]
     fn resolves_plain_path() {
         let tmp = TempDir::new().unwrap();
         touch(tmp.path(), "a/b/c");
 
         let mountpoints: Vec<PathBuf> = vec![];
-        let resolved = safe_resolve_path(&tmp.path().join("a/b/c"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("a/b/c"),
+            &mountpoints,
+        );
         assert_eq!(resolved, Some(tmp.path().join("a/b/c")));
     }
 
@@ -906,7 +957,11 @@ mod tests {
         touch(tmp.path(), "usr/bin/sh");
 
         let mountpoints = vec![tmp.path().join("usr/bin")];
-        let resolved = safe_resolve_path(&tmp.path().join("usr/bin/sh"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("usr/bin/sh"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -925,7 +980,11 @@ mod tests {
         .unwrap();
 
         let mountpoints = vec![tmp.path().join("usr/bin")];
-        let resolved = safe_resolve_path(&tmp.path().join("venv/bin/python"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("venv/bin/python"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -936,7 +995,11 @@ mod tests {
         unix_fs::symlink(tmp.path().join("a"), tmp.path().join("b")).unwrap();
 
         let mountpoints: Vec<PathBuf> = vec![];
-        let resolved = safe_resolve_path(&tmp.path().join("a"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("a"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -951,7 +1014,11 @@ mod tests {
         unix_fs::symlink(tmp.path().join("link2"), tmp.path().join("link1")).unwrap();
 
         let mountpoints = vec![tmp.path().join("mnt")];
-        let resolved = safe_resolve_path(&tmp.path().join("link1"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("link1"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -982,6 +1049,37 @@ mod tests {
 
         let mountpoints = vec![cwd.join("mnt")];
         let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolves_path_entry_in_callers_mount_namespace() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        touch_executable(&base, "sandbox/envfs-test-exe");
+        fs::create_dir(base.join("tools")).unwrap();
+
+        let mut command = Caller::command(base.join("tools"));
+        bind_mount_privately(&mut command, &base.join("sandbox"), &base.join("tools"));
+        let caller = Caller::spawn(command);
+
+        let mountpoints: Vec<PathBuf> = vec![];
+        let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
+        assert_eq!(resolved, Some(base.join("tools/envfs-test-exe")));
+    }
+
+    #[test]
+    fn parent_dir_does_not_leave_root() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "exe");
+        fs::create_dir(tmp.path().join("root")).unwrap();
+
+        let mountpoints: Vec<PathBuf> = vec![];
+        let resolved = safe_resolve_path(
+            &open_dir(&tmp.path().join("root")),
+            Path::new("/../exe"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 }

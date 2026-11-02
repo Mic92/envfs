@@ -68,6 +68,13 @@ testers.runNixOSTest {
     out = machine.succeed("cd /tmp/cwd && PATH=bin /usr/bin/hello")
     assert out == "Hello, world!\n", out
 
+    # PATH entries are looked up in the caller's mount namespace
+    machine.succeed("mkdir -p /opt/tools")
+    out = machine.succeed(
+        "unshare --mount sh -c 'mount --bind ${hello}/bin /opt/tools && PATH=/opt/tools /usr/bin/hello'"
+    )
+    assert out == "Hello, world!\n", out
+
     # A daemon left over from a previous mount must not unmount its successor
     # (https://github.com/Mic92/envfs/issues/238).
     old_pid = machine.succeed("pgrep -x mount.envfs").strip()
