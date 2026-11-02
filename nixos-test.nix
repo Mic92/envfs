@@ -17,6 +17,37 @@ let
     #!/usr/bin/bash
     echo "OK"
   '';
+
+  # The reader sleeps past the attribute TTL and uses an inherited fd, so no
+  # path walk refreshes the envfs root's attributes. A deadlocked reader can't
+  # be killed, so the script doesn't wait for it.
+  readlinkFromOtherProcess = writeScript "readlink-from-other-process" ''
+    #!${python3}/bin/python3
+    import os
+    import subprocess
+    import sys
+    import time
+
+    if len(sys.argv) == 1:
+        fd = os.open("/usr/bin/env", os.O_PATH | os.O_NOFOLLOW)
+        reader = subprocess.Popen(
+            [sys.argv[0], str(fd)],
+            pass_fds=[fd],
+            env={"PATH": "/opt/bin"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            out, _ = reader.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            sys.exit("readlink did not return within 10 seconds")
+        sys.stdout.write(out.decode())
+        sys.exit(reader.returncode)
+    else:
+        time.sleep(2)
+        print(os.readlink("", dir_fd=int(sys.argv[1])))
+  '';
 in
 testers.runNixOSTest {
   name = "envfs";
@@ -74,6 +105,13 @@ testers.runNixOSTest {
         "unshare --mount sh -c 'mount --bind ${hello}/bin /opt/tools && PATH=/opt/tools /usr/bin/hello'"
     )
     assert out == "Hello, world!\n", out
+
+    # a bind mount of /usr/bin that envfs was not told about must not make envfs
+    # wait on its own filesystem
+    machine.succeed("mkdir -p /opt/bin", "mount --bind /usr/bin /opt/bin")
+    out = machine.succeed("${readlinkFromOtherProcess}")
+    assert out.startswith("/nix/store/"), out
+    machine.succeed("umount /opt/bin")
 
     # A daemon left over from a previous mount must not unmount its successor
     # (https://github.com/Mic92/envfs/issues/238).

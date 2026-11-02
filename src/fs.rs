@@ -21,9 +21,9 @@ use std::fs::File;
 use std::io::Seek;
 use std::io::{BufRead, BufReader};
 use std::io::{Read, SeekFrom};
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::io::OwnedFd;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 use std::ptr;
 use std::sync::mpsc;
@@ -267,6 +267,33 @@ fn symlink_attr(ino: INodeNo) -> FileAttr {
     }
 }
 
+/// Whether the cached attributes of `name` in `dir` mark an envfs inode. A
+/// plain stat could make FUSE ask envfs itself for them and deadlock.
+fn is_cached_envfs_inode(dir: &OwnedFd, name: &OsStr) -> bool {
+    let name = match CString::new(name.as_bytes()) {
+        Ok(name) => name,
+        Err(_) => return false,
+    };
+    let mut stx = MaybeUninit::<libc::statx>::uninit();
+
+    // SAFETY: `name` is NUL-terminated and `stx` has room for a `struct statx`.
+    let res = unsafe {
+        libc::statx(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_DONT_SYNC,
+            libc::STATX_NLINK,
+            stx.as_mut_ptr(),
+        )
+    };
+    if res != 0 {
+        return false;
+    }
+
+    // SAFETY: statx() filled `stx` because it returned 0.
+    unsafe { stx.assume_init() }.stx_nlink == ENVFS_MAGIC
+}
+
 /// Resolve a path to a real file without triggering recursion into envfs filesystems.
 ///
 /// Uses O_PATH file descriptors with openat()/fstatat()/readlinkat() so that
@@ -320,6 +347,10 @@ where
 
                 // Abort if resolution would enter an envfs mountpoint.
                 if mountpoints.iter().any(|m| candidate.starts_with(m)) {
+                    return None;
+                }
+
+                if is_cached_envfs_inode(&dir_fd, name) {
                     return None;
                 }
 
