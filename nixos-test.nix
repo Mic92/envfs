@@ -60,6 +60,14 @@ testers.runNixOSTest {
     print(out)
     assert out == "OK\n"
 
+    # relative PATH entries are relative to the caller's working directory
+    machine.succeed(
+        "mkdir -p /tmp/cwd/bin",
+        "ln -s ${hello}/bin/hello /tmp/cwd/bin/hello",
+    )
+    out = machine.succeed("cd /tmp/cwd && PATH=bin /usr/bin/hello")
+    assert out == "Hello, world!\n", out
+
     # A daemon left over from a previous mount must not unmount its successor
     # (https://github.com/Mic92/envfs/issues/238).
     old_pid = machine.succeed("pgrep -x mount.envfs").strip()

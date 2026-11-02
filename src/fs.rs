@@ -382,8 +382,35 @@ where
     if res.is_ok() { Some(full_path) } else { None }
 }
 
+struct Requester {
+    cwd: Option<PathBuf>,
+}
+
+impl Requester {
+    fn new(pid: Pid) -> Requester {
+        Requester {
+            cwd: fs::read_link(format!("/proc/{pid}/cwd")).ok(),
+        }
+    }
+
+    fn search_dir(&self, entry: PathBuf) -> Option<PathBuf> {
+        if entry.is_absolute() {
+            return Some(entry);
+        }
+
+        // POSIX reads an empty entry as the working directory, but envfs also
+        // searches an empty `PATH` when it must ignore the requester's `PATH`.
+        if entry.as_os_str().is_empty() {
+            return None;
+        }
+
+        self.cwd.as_ref().map(|cwd| cwd.join(entry))
+    }
+}
+
 fn which<P1, P2>(
     path_env: &OsStr,
+    requester: &Requester,
     exe_name: P1,
     fallback_paths: &[PathBuf],
     mountpoints: &[P2],
@@ -392,7 +419,9 @@ where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    let exe = env::split_paths(&path_env).find_map(|dir| _which(&dir, &exe_name, mountpoints));
+    let exe = env::split_paths(&path_env)
+        .filter_map(|entry| requester.search_dir(entry))
+        .find_map(|dir| _which(&dir, &exe_name, mountpoints));
 
     exe.or_else(|| {
         fallback_paths
@@ -521,6 +550,8 @@ where
         return None;
     }
 
+    let requester = Requester::new(pid);
+
     // execve is always allowed and handled differently
     if is_execve_syscall(args[0]) {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
@@ -538,7 +569,7 @@ where
         };
         match get_path_from_mem(pid, envp) {
             Ok(path) => {
-                if let Some(exe) = which(&path, &name, &[], mountpoints) {
+                if let Some(exe) = which(&path, &requester, &name, &[], mountpoints) {
                     return Some(exe);
                 }
             }
@@ -566,7 +597,7 @@ where
 
     // We return all paths in fallback path to be resolved always independently
     // of the syscall.
-    which(path, &name, fallback_paths, mountpoints)
+    which(path, &requester, &name, fallback_paths, mountpoints)
 }
 
 fn get_syscall_args(pid: Pid) -> Result<Vec<usize>> {
@@ -784,7 +815,10 @@ impl Filesystem for EnvFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::os::unix::fs as unix_fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Child, Command, Stdio};
     use tempfile::TempDir;
 
     /// Helper: create a file inside a directory, creating parents as needed.
@@ -794,6 +828,66 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(&p, "").unwrap();
+    }
+
+    /// Helper: create an executable file inside a directory.
+    fn touch_executable(base: &Path, rel: &str) {
+        touch(base, rel);
+        fs::set_permissions(base.join(rel), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A process that envfs resolves names for. It runs `cat`, which stays
+    /// blocked reading stdin until the process is dropped.
+    struct Caller {
+        child: Child,
+    }
+
+    impl Caller {
+        /// A command whose only `PATH` is `path`. `ENVFS_RESOLVE_ALWAYS` makes
+        /// envfs use that `PATH` whichever system call `cat` is blocked in.
+        fn command<S: AsRef<OsStr>>(path: S) -> Command {
+            let cat = env::split_paths(&env::var_os("PATH").unwrap())
+                .map(|dir| dir.join("cat"))
+                .find(|candidate| candidate.is_file())
+                .unwrap();
+
+            let mut command = Command::new(cat);
+            command
+                .env_clear()
+                .env("PATH", path)
+                .env("ENVFS_RESOLVE_ALWAYS", "1");
+            command
+        }
+
+        fn spawn(mut command: Command) -> Caller {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+
+            // Until `cat` echoes a line, /proc may still show the environment
+            // that the child inherited from the test before it called exec.
+            child.stdin.as_mut().unwrap().write_all(b"ready\n").unwrap();
+            let mut line = String::new();
+            BufReader::new(child.stdout.as_mut().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "ready\n");
+
+            Caller { child }
+        }
+
+        fn pid(&self) -> Pid {
+            Pid::from_raw(self.child.id() as i32)
+        }
+    }
+
+    impl Drop for Caller {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 
     #[test]
@@ -858,6 +952,36 @@ mod tests {
 
         let mountpoints = vec![tmp.path().join("mnt")];
         let resolved = safe_resolve_path(&tmp.path().join("link1"), &mountpoints);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolves_relative_path_entry_against_callers_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        touch_executable(&cwd, "bin/envfs-test-exe");
+
+        let mut command = Caller::command("bin");
+        command.current_dir(&cwd);
+        let caller = Caller::spawn(command);
+
+        let mountpoints = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
+        assert_eq!(resolved, Some(cwd.join("bin/envfs-test-exe")));
+    }
+
+    #[test]
+    fn rejects_relative_path_entry_into_mountpoint() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        touch_executable(&cwd, "mnt/envfs-test-exe");
+
+        let mut command = Caller::command("mnt");
+        command.current_dir(&cwd);
+        let caller = Caller::spawn(command);
+
+        let mountpoints = vec![cwd.join("mnt")];
+        let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
         assert_eq!(resolved, None);
     }
 }
