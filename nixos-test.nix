@@ -106,6 +106,14 @@ testers.runNixOSTest {
     )
     assert out == "Hello, world!\n", out
 
+    # PATH entries are looked up with the caller's permissions
+    machine.succeed("install -D -m 755 /dev/null /root/bin/private-tool")
+    out = machine.succeed("PATH=/root/bin ${coreutils}/bin/readlink /usr/bin/private-tool")
+    assert out == "/root/bin/private-tool\n", out
+    machine.fail(
+        "runuser -u nobody -- env PATH=/root/bin ${coreutils}/bin/readlink /usr/bin/private-tool"
+    )
+
     # a bind mount of /usr/bin that envfs was not told about must not make envfs
     # wait on its own filesystem
     machine.succeed("mkdir -p /opt/bin", "mount --bind /usr/bin /opt/bin")

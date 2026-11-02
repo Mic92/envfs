@@ -10,7 +10,7 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::mount::mount;
 use nix::sys::stat::fstatat;
-use nix::unistd::{self, Pid};
+use nix::unistd::{self, Gid, Pid, Uid};
 use simple_error::try_with;
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -411,7 +411,7 @@ where
         root,
         relative_path,
         unistd::AccessFlags::X_OK,
-        AtFlags::empty(),
+        AtFlags::AT_EACCESS,
     );
     if res.is_ok() { Some(full_path) } else { None }
 }
@@ -419,6 +419,7 @@ where
 struct Requester {
     root: OwnedFd,
     cwd: Option<PathBuf>,
+    credentials: Credentials,
 }
 
 impl Requester {
@@ -434,6 +435,7 @@ impl Requester {
         Some(Requester {
             root,
             cwd: fs::read_link(proc_dir.join("cwd")).ok(),
+            credentials: Credentials::of(pid)?,
         })
     }
 
@@ -452,6 +454,108 @@ impl Requester {
     }
 }
 
+#[derive(PartialEq, Eq)]
+struct Credentials {
+    fsuid: Uid,
+    fsgid: Gid,
+    groups: Vec<Gid>,
+}
+
+impl Credentials {
+    fn of(pid: Pid) -> Option<Credentials> {
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .map(str::split_whitespace)
+        };
+
+        // Uid: and Gid: list the real, effective, saved and filesystem IDs.
+        let fsuid = field("Uid:")?.nth(3)?.parse().ok()?;
+        let fsgid = field("Gid:")?.nth(3)?.parse().ok()?;
+        let groups = field("Groups:")?
+            .map(|gid| gid.parse().map(Gid::from_raw))
+            .collect::<std::result::Result<_, _>>()
+            .ok()?;
+
+        Some(Credentials {
+            fsuid: Uid::from_raw(fsuid),
+            fsgid: Gid::from_raw(fsgid),
+            groups,
+        })
+    }
+
+    /// The credentials of the calling thread. envfs changes its filesystem IDs
+    /// only inside `assume`, so outside it they equal the effective IDs.
+    fn current() -> Option<Credentials> {
+        Some(Credentials {
+            fsuid: unistd::geteuid(),
+            fsgid: unistd::getegid(),
+            groups: unistd::getgroups().ok()?,
+        })
+    }
+
+    fn assume(&self) -> Option<AssumedCredentials> {
+        let own = Credentials::current()?;
+        if own == *self {
+            return Some(AssumedCredentials { own: None });
+        }
+
+        if let Err(e) = self.apply() {
+            debug!("cannot assume the requester's credentials: {e}");
+            let _ = own.apply();
+            return None;
+        }
+
+        Some(AssumedCredentials { own: Some(own) })
+    }
+
+    fn apply(&self) -> nix::Result<()> {
+        set_thread_groups(&self.groups)?;
+        unistd::setfsgid(self.fsgid);
+        unistd::setfsuid(self.fsuid);
+
+        // setfsgid() and setfsuid() return the previous ID whether or not they
+        // succeed, so a second call shows whether the first one took effect.
+        if unistd::setfsgid(self.fsgid) != self.fsgid || unistd::setfsuid(self.fsuid) != self.fsuid
+        {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+}
+
+struct AssumedCredentials {
+    own: Option<Credentials>,
+}
+
+impl Drop for AssumedCredentials {
+    fn drop(&mut self) {
+        if let Some(own) = &self.own {
+            if let Err(e) = own.apply() {
+                warn!("cannot restore envfs's own credentials: {e}");
+            }
+        }
+    }
+}
+
+// On these architectures `SYS_setgroups` takes 16-bit group IDs.
+#[cfg(any(target_arch = "x86", target_arch = "arm", target_arch = "sparc"))]
+const SYS_SETGROUPS: libc::c_long = libc::SYS_setgroups32;
+
+#[cfg(not(any(target_arch = "x86", target_arch = "arm", target_arch = "sparc")))]
+const SYS_SETGROUPS: libc::c_long = libc::SYS_setgroups;
+
+/// Sets the supplementary groups of the calling thread. glibc's setgroups()
+/// would change them for every thread in the process.
+fn set_thread_groups(groups: &[Gid]) -> nix::Result<()> {
+    let groups: Vec<libc::gid_t> = groups.iter().map(|gid| gid.as_raw()).collect();
+    // SAFETY: `groups` points to `groups.len()` group IDs.
+    let res = unsafe { libc::syscall(SYS_SETGROUPS, groups.len(), groups.as_ptr()) };
+    Errno::result(res).map(drop)
+}
+
 fn which<P1, P2>(
     path_env: &OsStr,
     requester: &Requester,
@@ -463,6 +567,8 @@ where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
+    let _credentials = requester.credentials.assume()?;
+
     let exe = env::split_paths(&path_env)
         .filter_map(|entry| requester.search_dir(entry))
         .find_map(|dir| _which(&requester.root, &dir, &exe_name, mountpoints));
