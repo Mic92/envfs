@@ -10,7 +10,7 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::mount::mount;
 use nix::sys::stat::fstatat;
-use nix::unistd::{self, Pid};
+use nix::unistd::{self, Gid, Pid, Uid};
 use simple_error::try_with;
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -21,9 +21,9 @@ use std::fs::File;
 use std::io::Seek;
 use std::io::{BufRead, BufReader};
 use std::io::{Read, SeekFrom};
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::io::OwnedFd;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 use std::ptr;
 use std::sync::mpsc;
@@ -267,14 +267,31 @@ fn symlink_attr(ino: INodeNo) -> FileAttr {
     }
 }
 
-/// Open the root directory as an O_PATH fd.
-fn open_root() -> Option<OwnedFd> {
-    nix::fcntl::open(
-        Path::new("/"),
-        OFlag::O_PATH | OFlag::O_DIRECTORY,
-        nix::sys::stat::Mode::empty(),
-    )
-    .ok()
+/// Whether the cached attributes of `name` in `dir` mark an envfs inode. A
+/// plain stat could make FUSE ask envfs itself for them and deadlock.
+fn is_cached_envfs_inode(dir: &OwnedFd, name: &OsStr) -> bool {
+    let name = match CString::new(name.as_bytes()) {
+        Ok(name) => name,
+        Err(_) => return false,
+    };
+    let mut stx = MaybeUninit::<libc::statx>::uninit();
+
+    // SAFETY: `name` is NUL-terminated and `stx` has room for a `struct statx`.
+    let res = unsafe {
+        libc::statx(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_DONT_SYNC,
+            libc::STATX_NLINK,
+            stx.as_mut_ptr(),
+        )
+    };
+    if res != 0 {
+        return false;
+    }
+
+    // SAFETY: statx() filled `stx` because it returned 0.
+    unsafe { stx.assume_init() }.stx_nlink == ENVFS_MAGIC
 }
 
 /// Resolve a path to a real file without triggering recursion into envfs filesystems.
@@ -284,9 +301,12 @@ fn open_root() -> Option<OwnedFd> {
 /// parent fd. This avoids full path traversals by the kernel, which would
 /// deadlock if any component lives on an envfs mountpoint.
 ///
+/// `root` is the directory that `/` refers to, both at the start of `path` and
+/// in absolute symlink targets.
+///
 /// Returns `None` when the path is unresolvable or when resolution would enter
 /// an envfs mountpoint.
-fn safe_resolve_path<P>(path: &Path, mountpoints: &[P]) -> Option<PathBuf>
+fn safe_resolve_path<P>(root: &OwnedFd, path: &Path, mountpoints: &[P]) -> Option<PathBuf>
 where
     P: AsRef<Path>,
 {
@@ -294,7 +314,7 @@ where
 
     let mut symlink_count = 0;
     let mut resolved = PathBuf::from("/");
-    let mut dir_fd: OwnedFd = open_root()?;
+    let mut dir_fd: OwnedFd = root.try_clone().ok()?;
     let mut queue: VecDeque<OsString> = path
         .components()
         .map(|c| c.as_os_str().to_owned())
@@ -305,11 +325,15 @@ where
         match comp_path.components().next()? {
             Component::RootDir => {
                 resolved = PathBuf::from("/");
-                dir_fd = open_root()?;
+                dir_fd = root.try_clone().ok()?;
             }
             Component::CurDir => continue,
             Component::ParentDir => {
-                resolved.pop();
+                // The kernel only stops `..` at the daemon's own root, so
+                // opening `..` at `root` could leave it.
+                if !resolved.pop() {
+                    continue;
+                }
                 dir_fd = openat(
                     &dir_fd,
                     Path::new(".."),
@@ -323,6 +347,10 @@ where
 
                 // Abort if resolution would enter an envfs mountpoint.
                 if mountpoints.iter().any(|m| candidate.starts_with(m)) {
+                    return None;
+                }
+
+                if is_cached_envfs_inode(&dir_fd, name) {
                     return None;
                 }
 
@@ -372,18 +400,165 @@ where
     Some(resolved)
 }
 
-fn _which<P1, P2>(path: &Path, exe_name: P1, mountpoints: &[P2]) -> Option<PathBuf>
+fn _which<P1, P2>(root: &OwnedFd, path: &Path, exe_name: P1, mountpoints: &[P2]) -> Option<PathBuf>
 where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    let full_path = safe_resolve_path(&path.join(&exe_name), mountpoints)?;
-    let res = unistd::access(&full_path, unistd::AccessFlags::X_OK);
+    let full_path = safe_resolve_path(root, &path.join(&exe_name), mountpoints)?;
+    let relative_path = full_path.strip_prefix("/").ok()?;
+    let res = unistd::faccessat(
+        root,
+        relative_path,
+        unistd::AccessFlags::X_OK,
+        AtFlags::AT_EACCESS,
+    );
     if res.is_ok() { Some(full_path) } else { None }
+}
+
+struct Requester {
+    root: OwnedFd,
+    cwd: Option<PathBuf>,
+    credentials: Credentials,
+}
+
+impl Requester {
+    fn new(pid: Pid) -> Option<Requester> {
+        let proc_dir = PathBuf::from("/proc").join(pid.to_string());
+        let root = nix::fcntl::open(
+            &proc_dir.join("root"),
+            OFlag::O_PATH | OFlag::O_DIRECTORY,
+            nix::sys::stat::Mode::empty(),
+        )
+        .ok()?;
+
+        Some(Requester {
+            root,
+            cwd: fs::read_link(proc_dir.join("cwd")).ok(),
+            credentials: Credentials::of(pid)?,
+        })
+    }
+
+    fn search_dir(&self, entry: PathBuf) -> Option<PathBuf> {
+        if entry.is_absolute() {
+            return Some(entry);
+        }
+
+        // POSIX reads an empty entry as the working directory, but envfs also
+        // searches an empty `PATH` when it must ignore the requester's `PATH`.
+        if entry.as_os_str().is_empty() {
+            return None;
+        }
+
+        self.cwd.as_ref().map(|cwd| cwd.join(entry))
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct Credentials {
+    fsuid: Uid,
+    fsgid: Gid,
+    groups: Vec<Gid>,
+}
+
+impl Credentials {
+    fn of(pid: Pid) -> Option<Credentials> {
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .map(str::split_whitespace)
+        };
+
+        // Uid: and Gid: list the real, effective, saved and filesystem IDs.
+        let fsuid = field("Uid:")?.nth(3)?.parse().ok()?;
+        let fsgid = field("Gid:")?.nth(3)?.parse().ok()?;
+        let groups = field("Groups:")?
+            .map(|gid| gid.parse().map(Gid::from_raw))
+            .collect::<std::result::Result<_, _>>()
+            .ok()?;
+
+        Some(Credentials {
+            fsuid: Uid::from_raw(fsuid),
+            fsgid: Gid::from_raw(fsgid),
+            groups,
+        })
+    }
+
+    /// The credentials of the calling thread. envfs changes its filesystem IDs
+    /// only inside `assume`, so outside it they equal the effective IDs.
+    fn current() -> Option<Credentials> {
+        Some(Credentials {
+            fsuid: unistd::geteuid(),
+            fsgid: unistd::getegid(),
+            groups: unistd::getgroups().ok()?,
+        })
+    }
+
+    fn assume(&self) -> Option<AssumedCredentials> {
+        let own = Credentials::current()?;
+        if own == *self {
+            return Some(AssumedCredentials { own: None });
+        }
+
+        if let Err(e) = self.apply() {
+            debug!("cannot assume the requester's credentials: {e}");
+            let _ = own.apply();
+            return None;
+        }
+
+        Some(AssumedCredentials { own: Some(own) })
+    }
+
+    fn apply(&self) -> nix::Result<()> {
+        set_thread_groups(&self.groups)?;
+        unistd::setfsgid(self.fsgid);
+        unistd::setfsuid(self.fsuid);
+
+        // setfsgid() and setfsuid() return the previous ID whether or not they
+        // succeed, so a second call shows whether the first one took effect.
+        if unistd::setfsgid(self.fsgid) != self.fsgid || unistd::setfsuid(self.fsuid) != self.fsuid
+        {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+}
+
+struct AssumedCredentials {
+    own: Option<Credentials>,
+}
+
+impl Drop for AssumedCredentials {
+    fn drop(&mut self) {
+        if let Some(own) = &self.own {
+            if let Err(e) = own.apply() {
+                warn!("cannot restore envfs's own credentials: {e}");
+            }
+        }
+    }
+}
+
+// On these architectures `SYS_setgroups` takes 16-bit group IDs.
+#[cfg(any(target_arch = "x86", target_arch = "arm", target_arch = "sparc"))]
+const SYS_SETGROUPS: libc::c_long = libc::SYS_setgroups32;
+
+#[cfg(not(any(target_arch = "x86", target_arch = "arm", target_arch = "sparc")))]
+const SYS_SETGROUPS: libc::c_long = libc::SYS_setgroups;
+
+/// Sets the supplementary groups of the calling thread. glibc's setgroups()
+/// would change them for every thread in the process.
+fn set_thread_groups(groups: &[Gid]) -> nix::Result<()> {
+    let groups: Vec<libc::gid_t> = groups.iter().map(|gid| gid.as_raw()).collect();
+    // SAFETY: `groups` points to `groups.len()` group IDs.
+    let res = unsafe { libc::syscall(SYS_SETGROUPS, groups.len(), groups.as_ptr()) };
+    Errno::result(res).map(drop)
 }
 
 fn which<P1, P2>(
     path_env: &OsStr,
+    requester: &Requester,
     exe_name: P1,
     fallback_paths: &[PathBuf],
     mountpoints: &[P2],
@@ -392,12 +567,16 @@ where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    let exe = env::split_paths(&path_env).find_map(|dir| _which(&dir, &exe_name, mountpoints));
+    let _credentials = requester.credentials.assume()?;
+
+    let exe = env::split_paths(&path_env)
+        .filter_map(|entry| requester.search_dir(entry))
+        .find_map(|dir| _which(&requester.root, &dir, &exe_name, mountpoints));
 
     exe.or_else(|| {
         fallback_paths
             .iter()
-            .find_map(|dir| _which(dir, &exe_name, mountpoints))
+            .find_map(|dir| _which(&requester.root, dir, &exe_name, mountpoints))
     })
 }
 
@@ -521,6 +700,8 @@ where
         return None;
     }
 
+    let requester = Requester::new(pid)?;
+
     // execve is always allowed and handled differently
     if is_execve_syscall(args[0]) {
         // If we have an execve system call, fetch the latest environment variables from /proc/<pid>/mem
@@ -538,7 +719,7 @@ where
         };
         match get_path_from_mem(pid, envp) {
             Ok(path) => {
-                if let Some(exe) = which(&path, &name, &[], mountpoints) {
+                if let Some(exe) = which(&path, &requester, &name, &[], mountpoints) {
                     return Some(exe);
                 }
             }
@@ -566,7 +747,7 @@ where
 
     // We return all paths in fallback path to be resolved always independently
     // of the syscall.
-    which(path, &name, fallback_paths, mountpoints)
+    which(path, &requester, &name, fallback_paths, mountpoints)
 }
 
 fn get_syscall_args(pid: Pid) -> Result<Vec<usize>> {
@@ -784,7 +965,11 @@ impl Filesystem for EnvFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::os::unix::fs as unix_fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
     use tempfile::TempDir;
 
     /// Helper: create a file inside a directory, creating parents as needed.
@@ -796,13 +981,110 @@ mod tests {
         fs::write(&p, "").unwrap();
     }
 
+    /// Helper: open a directory as an O_PATH fd.
+    fn open_dir(path: &Path) -> OwnedFd {
+        nix::fcntl::open(
+            path,
+            OFlag::O_PATH | OFlag::O_DIRECTORY,
+            nix::sys::stat::Mode::empty(),
+        )
+        .unwrap()
+    }
+
+    /// Helper: create an executable file inside a directory.
+    fn touch_executable(base: &Path, rel: &str) {
+        touch(base, rel);
+        fs::set_permissions(base.join(rel), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A process that envfs resolves names for. It runs `cat`, which stays
+    /// blocked reading stdin until the process is dropped.
+    struct Caller {
+        child: Child,
+    }
+
+    impl Caller {
+        /// A command whose only `PATH` is `path`. `ENVFS_RESOLVE_ALWAYS` makes
+        /// envfs use that `PATH` whichever system call `cat` is blocked in.
+        fn command<S: AsRef<OsStr>>(path: S) -> Command {
+            let cat = env::split_paths(&env::var_os("PATH").unwrap())
+                .map(|dir| dir.join("cat"))
+                .find(|candidate| candidate.is_file())
+                .unwrap();
+
+            let mut command = Command::new(cat);
+            command
+                .env_clear()
+                .env("PATH", path)
+                .env("ENVFS_RESOLVE_ALWAYS", "1");
+            command
+        }
+
+        fn spawn(mut command: Command) -> Caller {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+
+            // Until `cat` echoes a line, /proc may still show the environment
+            // that the child inherited from the test before it called exec.
+            child.stdin.as_mut().unwrap().write_all(b"ready\n").unwrap();
+            let mut line = String::new();
+            BufReader::new(child.stdout.as_mut().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "ready\n");
+
+            Caller { child }
+        }
+
+        fn pid(&self) -> Pid {
+            Pid::from_raw(self.child.id() as i32)
+        }
+    }
+
+    impl Drop for Caller {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn bind_mount_privately(command: &mut Command, source: &Path, target: &Path) {
+        let source = source.to_path_buf();
+        let target = target.to_path_buf();
+
+        // SAFETY: the closure only makes system calls. nix copies short paths
+        // into a stack buffer, so the closure does not allocate.
+        unsafe {
+            command.pre_exec(move || {
+                // The new user namespace gives an unprivileged test process
+                // the capability to mount.
+                Errno::result(libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS))?;
+                mount(
+                    Some(source.as_path()),
+                    target.as_path(),
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>,
+                )?;
+                Ok(())
+            });
+        }
+    }
+
     #[test]
     fn resolves_plain_path() {
         let tmp = TempDir::new().unwrap();
         touch(tmp.path(), "a/b/c");
 
         let mountpoints: Vec<PathBuf> = vec![];
-        let resolved = safe_resolve_path(&tmp.path().join("a/b/c"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("a/b/c"),
+            &mountpoints,
+        );
         assert_eq!(resolved, Some(tmp.path().join("a/b/c")));
     }
 
@@ -812,7 +1094,11 @@ mod tests {
         touch(tmp.path(), "usr/bin/sh");
 
         let mountpoints = vec![tmp.path().join("usr/bin")];
-        let resolved = safe_resolve_path(&tmp.path().join("usr/bin/sh"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("usr/bin/sh"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -831,7 +1117,11 @@ mod tests {
         .unwrap();
 
         let mountpoints = vec![tmp.path().join("usr/bin")];
-        let resolved = safe_resolve_path(&tmp.path().join("venv/bin/python"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("venv/bin/python"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -842,7 +1132,11 @@ mod tests {
         unix_fs::symlink(tmp.path().join("a"), tmp.path().join("b")).unwrap();
 
         let mountpoints: Vec<PathBuf> = vec![];
-        let resolved = safe_resolve_path(&tmp.path().join("a"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("a"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -857,7 +1151,72 @@ mod tests {
         unix_fs::symlink(tmp.path().join("link2"), tmp.path().join("link1")).unwrap();
 
         let mountpoints = vec![tmp.path().join("mnt")];
-        let resolved = safe_resolve_path(&tmp.path().join("link1"), &mountpoints);
+        let resolved = safe_resolve_path(
+            &open_dir(Path::new("/")),
+            &tmp.path().join("link1"),
+            &mountpoints,
+        );
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolves_relative_path_entry_against_callers_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        touch_executable(&cwd, "bin/envfs-test-exe");
+
+        let mut command = Caller::command("bin");
+        command.current_dir(&cwd);
+        let caller = Caller::spawn(command);
+
+        let mountpoints = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
+        assert_eq!(resolved, Some(cwd.join("bin/envfs-test-exe")));
+    }
+
+    #[test]
+    fn rejects_relative_path_entry_into_mountpoint() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        touch_executable(&cwd, "mnt/envfs-test-exe");
+
+        let mut command = Caller::command("mnt");
+        command.current_dir(&cwd);
+        let caller = Caller::spawn(command);
+
+        let mountpoints = vec![cwd.join("mnt")];
+        let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolves_path_entry_in_callers_mount_namespace() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        touch_executable(&base, "sandbox/envfs-test-exe");
+        fs::create_dir(base.join("tools")).unwrap();
+
+        let mut command = Caller::command(base.join("tools"));
+        bind_mount_privately(&mut command, &base.join("sandbox"), &base.join("tools"));
+        let caller = Caller::spawn(command);
+
+        let mountpoints: Vec<PathBuf> = vec![];
+        let resolved = resolve_target(caller.pid(), "envfs-test-exe", &[], &mountpoints);
+        assert_eq!(resolved, Some(base.join("tools/envfs-test-exe")));
+    }
+
+    #[test]
+    fn parent_dir_does_not_leave_root() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "exe");
+        fs::create_dir(tmp.path().join("root")).unwrap();
+
+        let mountpoints: Vec<PathBuf> = vec![];
+        let resolved = safe_resolve_path(
+            &open_dir(&tmp.path().join("root")),
+            Path::new("/../exe"),
+            &mountpoints,
+        );
         assert_eq!(resolved, None);
     }
 }
