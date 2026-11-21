@@ -2,7 +2,7 @@ use concurrent_hashmap::ConcHashMap;
 use fuser::Errno as FuseErrno;
 use fuser::{
     FileAttr, FileType, Filesystem, Generation, INodeNo, ReplyAttr, ReplyData, ReplyDirectory,
-    ReplyEntry, ReplyStatfs, ReplyXattr, Request,
+    ReplyEntry, ReplyXattr, Request,
 };
 use libc::{FILE, endmntent, getmntent, setmntent};
 use log::{debug, warn};
@@ -694,10 +694,6 @@ impl Filesystem for EnvFs {
         }
         tryfuse!(self.inode(ino), reply);
         reply.attr(&TTL, &symlink_attr(ino));
-    }
-
-    fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-        reply.error(FuseErrno::ENOENT);
     }
 
     fn readdir(

@@ -49,6 +49,12 @@ testers.runNixOSTest {
         "PATH=${coreutils}/bin test -e /usr/bin/cp",
     )
 
+    # rootless runc reads a mount's flags with statfs before it bind-mounts
+    # the mount read-only (https://github.com/Mic92/envfs/issues/244)
+    machine.succeed("stat -f /usr/bin", "stat -f /bin")
+    # like stat above, statfs must not reveal the entries
+    machine.fail("PATH=${coreutils}/bin stat -f /usr/bin/cp")
+
     out = machine.succeed("PATH=${coreutils}/bin readlink /usr/bin/cp")
     assert out.startswith("${coreutils}/bin/"), out
 
