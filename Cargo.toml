@@ -9,7 +9,7 @@ log = "0.4.*"
 nix = { version = "0.32.*", features = ["mount", "process", "fs", "signal"] }
 libc = "0.2.*"
 simple-error = "0.3.*"
-fuser = { version = "0.18", default-features = false }
+fuser = { version = "0.19", default-features = false }
 
 [dependencies.concurrent-hashmap]
 version = "0.2.*"
